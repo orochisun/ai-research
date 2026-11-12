@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Nexus local research workbench. Python standard library only."""
+"""ssj local research workbench. Python standard library only."""
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import signal
 import sqlite3
 import threading
 import time
@@ -13,6 +14,8 @@ import urllib.request
 import uuid
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from demo_workflow import Engine
+from binary_policy import select_arm
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get('NEXUS_DATA', ROOT / 'data')).resolve()
@@ -38,11 +41,14 @@ def db():
     finally:
         conn.close()
 
+demo = Engine(db, DB_LOCK, lambda: DATA)
+
 def init_db():
     with db() as c:
         c.execute('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, created REAL, updated REAL, status TEXT, request TEXT, result TEXT, events TEXT, cancel INTEGER DEFAULT 0)')
         # Interrupted tasks are visible, never silently reported as successful.
         c.execute("UPDATE tasks SET status='interrupted', updated=? WHERE status='running'", (time.time(),))
+    demo.init()
 
 def get_task(tid):
     with db() as c:
@@ -81,6 +87,9 @@ def validate_target(value):
 
 def create_task(body):
     target = validate_target(str(body.get('target', '')))
+    if target.is_file() and target.suffix.lower() not in TEXT_EXT:
+        with target.open('rb') as stream:
+            select_arm(stream.read(64 * 1024 * 1024 + 1))
     goal = str(body.get('goal', '')).strip()[:2000] or '识别安全研究入口，并整理可验证的研究假设'
     mode = body.get('mode', 'local')
     if mode not in ('local', 'ai', 'codex'):
@@ -152,7 +161,11 @@ def analyze(target, tid):
                             result['evidence'].append({'id': eid, 'file': rel, 'line': line_no, 'excerpt': line.strip()[:350], 'rule': rule, 'title': title, 'question': question})
                             break
             else:
-                item['kind'] = binary_format(raw)
+                selected_raw, selection = select_arm(raw)
+                item['arm_only'] = True
+                item['selection'] = selection
+                item['kind'] = binary_format(selected_raw)
+                raw = selected_raw
                 item['strings_sample'] = [x.decode('ascii')[:100] for x in re.findall(rb'[\x20-\x7e]{8,}', raw)[:12]]
             result['files'].append(item)
         except (OSError, ValueError) as e:
@@ -236,9 +249,14 @@ def worker():
         if row: run_task(row['id'])
         else: STOP.wait(.5)
 
+def demo_worker():
+    while not STOP.is_set():
+        demo.tick()
+        STOP.wait(.5)
+
 def report(t):
     r = t['result']
-    lines = ['# 星枢研究报告', '', f"- 任务：{t['id']}", f"- 状态：{t['status']}", f"- 目标：{t['request']['target']}", f"- 研究问题：{t['request']['goal']}", '', '## 范围与限制', '', r.get('scope', '尚无分析结果'), f"文件数：{len(r.get('files', []))}；截断：{r.get('truncated', False)}；模型状态：{r.get('ai', {}).get('status', 'unknown')}", '', '## 研究假设与实验结论', '']
+    lines = ['# ssj研究报告', '', f"- 任务：{t['id']}", f"- 状态：{t['status']}", f"- 目标：{t['request']['target']}", f"- 研究问题：{t['request']['goal']}", '', '## 范围与限制', '', r.get('scope', '尚无分析结果'), f"文件数：{len(r.get('files', []))}；截断：{r.get('truncated', False)}；模型状态：{r.get('ai', {}).get('status', 'unknown')}", '', '## 研究假设与实验结论', '']
     for h in r.get('hypotheses', []):
         lines.extend([f"### {h['id']} {h['title']}", f"状态：{h['status']}；证据：{', '.join(h['evidence_ids'])}", h['validation'], ''])
     lines.extend(['## Agent 实验记录', '', json.dumps(r.get('agent', {}), ensure_ascii=False, indent=2), '', '## 静态证据', ''])
@@ -271,6 +289,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.trusted(): return self.send(403, {'error': '本地来源校验失败'})
         path = self.path.split('?')[0]
+        if path == '/api/demo/static-tool': return self.send(200, demo.tool_config())
+        if path == '/api/demo/runs': return self.send(200, demo.list())
+        if path == '/api/demo/knowledge': return self.send(200, demo.knowledge())
+        m = re.fullmatch(r'/api/demo/runs/([a-f0-9]{12})', path)
+        if m:
+            try: return self.send(200, demo.get(m[1]))
+            except ValueError as e: return self.send(404, {'error': str(e)})
         if path == '/api/config':
             return self.send(200, {'codex_available': bool(__import__('shutil').which('codex')), 'codex_model': os.environ.get('NEXUS_CODEX_MODEL', 'gpt-6-luna'), 'model_configured': bool(os.environ.get('NEXUS_MODEL_BASE_URL') and os.environ.get('NEXUS_MODEL')), 'model': os.environ.get('NEXUS_MODEL', ''), 'demo_target': str(ROOT / 'examples'), 'allowed_roots': os.environ.get('NEXUS_ALLOWED_ROOTS', str(ROOT.parent))})
         if path == '/api/tasks':
@@ -282,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
             if not t: return self.send(404, {'error': '任务不存在'})
             if m[2] == '/report': return self.send(200, report(t), 'text/markdown; charset=utf-8')
             return self.send(200, t)
-        assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
+        assets = {'/': ('demo.html', 'text/html; charset=utf-8'), '/legacy': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8'), '/demo.js': ('demo.js', 'text/javascript; charset=utf-8'), '/demo.css': ('demo.css', 'text/css; charset=utf-8')}
         if path in assets:
             name, kind = assets[path]
             return self.send(200, (ROOT / 'static' / name).read_bytes(), kind)
@@ -295,6 +320,12 @@ class Handler(BaseHTTPRequestHandler):
             if size < 0 or size > 8192: raise ValueError('请求过大')
             body = json.loads(self.rfile.read(size) or '{}')
             if not isinstance(body, dict): raise ValueError('请求必须是对象')
+            if self.path == '/api/demo/static-tool': return self.send(200, demo.tool_config(body))
+            if self.path == '/api/demo/runs': return self.send(201, demo.create(body))
+            m = re.fullmatch(r'/api/demo/runs/([a-f0-9]{12})/action', self.path)
+            if m: return self.send(200, demo.action(m[1], body))
+            m = re.fullmatch(r'/api/demo/knowledge/([a-f0-9]{12})', self.path)
+            if m: return self.send(200, demo.edit_knowledge(m[1], body))
             if self.path == '/api/tasks': return self.send(201, create_task(body))
             m = re.fullmatch(r'/api/tasks/([a-f0-9]{12})/cancel', self.path)
             if m:
@@ -309,17 +340,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send(400, {'error': str(e)})
 
 def main():
+    def stop_server(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop_server)
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=8766)
     args = parser.parse_args()
     init_db()
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     threading.Thread(target=worker, daemon=True).start()
-    print(f'星枢工作台 http://127.0.0.1:{args.port}', flush=True)
+    threading.Thread(target=demo_worker, daemon=True).start()
+    print(f'ssj工作台 http://127.0.0.1:{args.port}', flush=True)
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally:
         STOP.set()
+        demo.shutdown()
         server.server_close()
 
 if __name__ == '__main__': main()

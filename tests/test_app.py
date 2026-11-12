@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import struct
 import threading
 import unittest
 import urllib.error
@@ -69,11 +70,11 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(app.get_task(t['id'])['status'], 'interrupted')
 
     def test_binary_and_budget(self):
-        self.target.write_bytes(b'\x7fELF' + b'hello world')
+        self.target.write_bytes(struct.pack('<IIIIIIII', 0xFEEDFACF, 0x0100000C, 2, 2, 0, 0, 0, 0))
         self.target = self.target.rename(self.root / 'sample.bin')
         t = self.task()
         r = app.analyze(self.target, t['id'])
-        self.assertEqual(r['files'][0]['kind'], 'ELF')
+        self.assertEqual(r['files'][0]['selection']['architecture'], 'arm64e')
         self.target.write_bytes(b'x' * (1024 * 1024 + 1))
         r = app.analyze(self.target, t['id'])
         self.assertEqual(len(r['skipped']), 1)
@@ -107,7 +108,7 @@ class ResearchTests(unittest.TestCase):
             bad = urllib.request.Request(base + '/api/tasks', payload, {'Origin':'https://untrusted.example'})
             with self.assertRaises(urllib.error.HTTPError) as error: urllib.request.urlopen(bad)
             self.assertEqual(error.exception.code, 403)
-            with urllib.request.urlopen(base + '/') as response: self.assertIn('星枢', response.read().decode())
+            with urllib.request.urlopen(base + '/') as response: self.assertIn('ssj', response.read().decode())
         finally:
             server.shutdown()
             server.server_close()

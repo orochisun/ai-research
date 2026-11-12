@@ -1,17 +1,23 @@
-# 星枢 Nexus — 可运行研究工作台
+# ssj — 可运行研究工作台
 
 Python 3.10+，仅使用标准库，无需安装依赖。此版本用于本机单用户研究。
+
+## 多 Agent 演示工作台
+
+首页现为专家主导的多 Agent 演示版。输入 `.xpc` 绝对路径即可演示规划、分析、实验、评审退回与补充验证；支持专家随时插话重新规划，以及原话归档、知识编辑确认和下一轮引用。默认模式先自动调查运行时 UID/EUID、entitlements、sandbox 和 IPC，再通过已登录的 Codex 调用 gpt-6-luna 规划分析。macOS 采集器先匹配进程及 launchd 配置，必要时正常激活已注册的目标服务，不修改配置或提升权限。实验和评审仍明确标为模拟。iOS 动态采集需要设备适配器，当前未接入，不能以 macOS 主机状态代替。真实模式要求目标存在；纯模拟模式允许不存在的 `.xpc` 路径。所有真实二进制分析拒绝 x86-only；Universal Binary 先提取 ARM 切片，工具和模型仅使用该切片。
+
+在当前仓库目录运行 `python3 app.py --port 8766`，打开 <http://127.0.0.1:8766>。前置调查还会通过 IDA/Hex-Rays 恢复 IPC 回调、鉴权分支和带逐跳反汇编的调用链；配置说明与边界见 [演示说明](docs/demo-guide.md)。下文原版真实分析功能位于 <http://127.0.0.1:8766/legacy>。
 
 ## 启动
 
 ```sh
-cd /Users/orochisun/work/atuin/nexus
+cd /path/to/ai-research
 python3 app.py --port 8766
 ```
 
-打开 http://127.0.0.1:8766 。点击「填入示例目标」→「启动研究」，查看文件清单、静态证据、待验证假设和执行轨迹。任务详情可打开 Markdown 报告和 JSON 导出，浏览器可另存为本地文件。
+打开 http://127.0.0.1:8766/legacy 。点击「填入示例目标」→「启动研究」，查看文件清单、静态证据、待验证假设和执行轨迹。任务详情可打开 Markdown 报告和 JSON 导出，浏览器可另存为本地文件。
 
-也可以填写本地源码目录或二进制文件路径。默认仅允许工作区目录 `nexus/..` 下的目标。扩大范围：
+也可以填写本地源码目录或二进制文件路径。原版入口默认仅允许仓库上级目录下的目标。扩大范围：
 
 ```sh
 export NEXUS_ALLOWED_ROOTS="/Users/orochisun/work:/another/research/path"
@@ -48,9 +54,9 @@ python3 app.py
 
 ## 当前边界
 
-这是静态研究入口原型。源码规则是文本匹配，可能命中注释或安全调用，也可能漏报；未实现数据流、可达性、反编译、真实动态实验、多 Agent、Fuzzing、版本差分或自动漏洞证明。二进制签名识别属于初筛，PE 与通用 Mach-O 等仍需解析器确认。所有研究假设均为 unverified。
+这是静态研究入口原型。源码规则是文本匹配，可能命中注释或安全调用，也可能漏报；未实现数据流、可达性、反编译、真实动态实验、Fuzzing、版本差分或自动漏洞证明。二进制分析仅接受 ARM Mach-O；Universal Binary 选择 ARM 切片。所有研究假设均为 unverified。
 
-Dagger / Atuin 尚未接入，没有使用内部 API 或伪造插件执行结果。模型接口已实现，但实际服务需要你配置。演示目标是明确标注的测试文件。
+真实模式默认调查阶段支持用户配置的静态分析工具，未启用时明确记录 disabled，不自动调用 Dagger。IDA 提供静态调用图；Atuin 尚未接入。规划与分析使用 gpt-6-luna，实验与评审仍明确标为模拟。外部工具的零发现、部分覆盖或失败均不能作为安全结论。
 
 大文件、隐藏文件、符号链接，以及 `.git`、`node_modules`、`.venv`、`data` 等目录会被跳过。当前不是针对恶意并发修改文件系统设计的沙箱；请在自己控制的本地目标上使用。默认只监听回环地址，带 Host / Origin 校验，不适合直接开放到局域网或公网。
 
@@ -97,4 +103,26 @@ python3 scripts/fetch_dependencies.py dagger
 
 实际 cJSON 研究已使用 GPT-6-Luna 读取原始源码、直接链接 cJSON.c 编译 ASan/UBSan harness，并运行解析长度和 NUL 边界用例，也执行了二进制分析。此阶段生成的 harness 仅打印结果，缺少自动断言，独立验收还需补齐。不能将正常退出视为全部假设验证成功。
 
-Dagger 源码已获取，但当前构建停在 dagger-datalog 的 `result_option_map_or_default` 不稳定接口错误（本机 rustc 1.97.1）。尚未成功运行 Dagger，适配器不能视为已完成端到端验收。任务数据库和原始运行日志保留于原开发机，不随 Git 提交。
+2026-11-12 已用本机 `dagger-main/target/release/dagger` 对 FontValidator 的 arm64e 切片完成真实调用：退出码 0，发现 0，覆盖 partial。原 `dagger/target/release/dagger` 构建对该样本发生 canonical OWNER panic；记录保留，不作为零发现处理。任务数据库和原始日志不随 Git 提交。
+
+`dagger_adapter.py` 支持 audit stream v1 与 protocol v4，保存引擎/输入 SHA256、参数、NDJSON、stderr、覆盖限制及报告。可用 `NEXUS_DAGGER_BIN` 显式指定内部 Dagger；否则按仓库 engines/dagger、相邻 dagger-main、相邻 dagger 查找，不使用 PATH 中同名的 CI 产品。引擎预算 90 秒，外层超时 110 秒；暂停或插话取消在途进程，旧轮次结果不会发布。输入只接受已验证的 ARM 切片。D1 与运行环境证据、IDA 调用链一起交给真实规划/分析 Agent，以上为历史 Dagger 专用适配器行为，仍供原版 CLI 显式调用；当前多 Agent 默认流程使用下述通用配置。
+
+
+## 通用静态分析工具配置
+
+工作台 → **静态分析工具配置**，填写工具名称、可执行文件绝对路径、参数、输出格式及报告来源，勾选启用后保存。配置保存在本地 SQLite；重启保留。新任务与“调整方向”开启的新轮次读取当前配置，执行中的轮次保持配置快照。没有配置时跳过外部工具，继续其他调查。
+
+参数填写 JSON 字符串数组，例如：
+
+```json
+["analyze", "{arm_binary}", "--output", "{output_file}"]
+```
+
+- `{arm_binary}`：已经校验 SHA256 的 ARM 切片副本；x86-only 在任务入口拒绝。
+- `{output_dir}`：本轮独立工具目录。
+- `{output_file}`：报告文件绝对路径。报告来源填 `reports/result.json` 等相对路径；若软件向标准输出写报告，填 `stdout` 并省略输出参数。
+- 格式可选 `json`、`ndjson`、`text`。不同厂商报告原样保留，由 Agent 分析；通用适配器不猜测私有字段意义或覆盖率。
+
+参数逐项传给程序，不经过 shell；路径含空格不需要额外引号，不支持管道或重定向。超时可设 1–1800 秒。保留命令、退出码、stdout、stderr、报告及配置快照；报告读取上限 4 MiB，提供给模型的 S1 摘录上限 100000 字符，截断明确标记。正常退出标为 executed，仅代表执行完成；覆盖范围默认 unknown，零发现不能证明安全。暂停或插话会取消在途调用，过期结果不进入新轮次。
+
+配置 API：GET/POST `/api/demo/static-tool`。POST 字段：`enabled`、`name`、`executable`、`args`（字符串数组）、`format`、`output`、`timeout_seconds`。当前入口配置一个 CLI 工具，不包含 API/MCP 或厂商特定报告映射。

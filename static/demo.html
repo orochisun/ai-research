@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ssj · 专家研究工作台</title><link rel="stylesheet" href="/demo.css"></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="/">✳ <span>ssj<small>ssj RESEARCH</small></span></a>
+  <div class="workspace-label">个人研究空间 <span class="live-dot"></span></div>
+  <nav aria-label="主导航"><button id="researchTab" class="nav active">◈　研究工作台</button><button id="knowledgeTab" class="nav">▤　专家知识库 <span id="knowledgeCount">0</span></button></nav>
+  <div class="sidebar-heading">研究记录 <button id="newRun" aria-label="新建研究">＋</button></div><div id="runs"></div>
+  <div class="sidebar-bottom"><span class="badge amber">研究与演示环境</span><p>流程与记录真实持久化<br>真实规划分析 · 模拟实验</p><a href="/legacy">打开原版分析工作台 ↗</a></div>
+</aside>
+<main>
+  <header><div><div class="eyebrow">HUMAN-LED · MULTI-AGENT RESEARCH</div><h1 id="pageTitle">研究工作台</h1><p>让 Agent 整理事实，让专家决定方向。</p></div><span class="badge">本地空间 · SQLite 持久化</span></header>
+  <p id="error" role="alert" hidden></p><p id="notice" role="status" hidden></p>
+  <section id="researchView">
+    <details id="createPanel" class="panel" open><summary>＋ 发起目标研究</summary><form id="createForm"><div class="form-grid"><label>目标路径<input id="target" required maxlength="4096" placeholder="/System/Library/XPCServices/Example.xpc"></label><label>研究方向<input id="goal" maxlength="2000" placeholder="重点研究代理转发后的调用者身份"></label></div><label>运行模式<select id="runMode"><option value="hybrid">真实规划与分析 · gpt-6-luna · 实验模拟</option><option value="simulation">全流程模拟 · 无模型调用</option></select></label><div class="row"><p class="muted">真实模式自动调查运行身份、权限、sandbox 和 IPC；必要时正常激活已注册的目标服务，再将证据交给 Codex 模型。漏洞实验仍模拟。模拟模式仅记录路径。</p><button type="button" class="secondary" id="sample">填入演示目标</button><button type="submit">启动协作研究 ↗</button></div></form></details>
+    <details class="panel" id="staticToolPanel"><summary>⚙ 静态分析工具配置</summary>
+      <form id="staticToolForm">
+        <label class="inline"><input type="checkbox" id="toolEnabled">启用自动调用</label>
+        <div class="form-grid"><label>工具名称<input id="toolName" required maxlength="100"></label><label>软件绝对路径<input id="toolExecutable" placeholder="/Applications/MyAnalyzer/bin/analyzer"></label></div>
+        <label>命令参数（JSON 字符串数组，每项为一个参数）<textarea id="toolArgs" rows="4" required></textarea></label>
+        <p class="muted">支持 {arm_binary}、{output_dir}、{output_file}。路径含空格无需加引号；参数直接传给程序，不经过 shell。</p>
+        <div class="form-grid"><label>输出格式<select id="toolFormat"><option value="json">JSON</option><option value="ndjson">NDJSON（每行 JSON）</option><option value="text">纯文本</option></select></label><label>报告来源<input id="toolOutput" required placeholder="stdout 或 reports/result.json"></label><label>超时（秒）<input id="toolTimeout" type="number" min="1" max="1800" required></label></div>
+        <p class="muted">报告来源填 stdout 表示读取标准输出；填写相对文件路径时，使用 {output_file} 把报告位置传给软件。仅分析 ARM 切片。保存后对新任务、新轮次生效；已有任务可用“调整方向”开始新一轮。</p>
+        <button type="submit">保存工具配置</button><span id="toolSaved" role="status"></span>
+      </form>
+    </details>
+    <section id="welcome" class="welcome"><div class="welcome-icon">◈</div><h2>从一个 XPC 服务或二进制开始</h2><p>运行环境调查 → 规划 → 分析 → 实验 → 评审打回 → 补充验证 → 专家判断</p><p class="muted">模拟节点约 20 秒；真实模型每阶段最多 5 分钟。随时插话，观察计划如何改变。</p></section>
+    <div id="runDetail" hidden>
+      <div class="run-heading"><div><div class="eyebrow" id="runId"></div><h2 id="targetName"></h2><p id="targetPath" class="path"></p></div><span id="runStatus" class="badge"></span></div>
+      <div class="toolbar"><div id="roundLabel"></div><div class="row"><button class="secondary" id="pause">暂停</button><button class="secondary" id="step">推进一步</button><button class="secondary" id="exportRun">导出研究记录 ↓</button></div></div>
+      <div class="workflow" id="workflow" aria-label="Agent 流程"></div>
+      <div class="work-grid">
+        <div>
+          <section class="panel" id="runtimePanel" hidden><h3>默认前置调查 · 运行环境与 IPC</h3><p id="runtimeStatus" class="muted"></p><div id="runtimeResults"></div></section>
+          <section class="panel"><div class="section-title"><h3>本轮研究计划</h3><span id="executionMode" class="badge amber">模拟执行</span></div><p id="focus" class="focus"></p><ol id="plan"></ol><div id="knowledgeRefs" class="muted"></div></section>
+          <section class="panel" id="staticAnalysisPanel" hidden><h3>静态分析工具报告</h3><p id="staticAnalysisStatus"></p><pre id="staticAnalysisResult"></pre></section>
+          <section class="panel" id="callGraphPanel" hidden><h3>IPC 入口 → 敏感操作调用链</h3><p id="callGraphStatus" class="muted"></p><div id="callGraphResults"></div></section>
+          <section class="panel" id="modelPanel" hidden><h3>真实模型分析</h3><p id="modelStatus" class="muted"></p><div id="modelResults"></div></section><section class="panel" id="reviewPanel"><div class="section-title"><h3>评审与退回</h3><span id="reviewCount" class="muted"></span></div><div id="reviews"></div></section>
+          <section class="panel"><div class="section-title"><h3>事实与实验记录</h3><label class="inline"><input id="allArtifacts" type="checkbox">包含历史轮次</label></div><p class="muted">工具记录、模型解释与模拟实验分别标注来源。模拟返回值不能证明目标行为。</p><div id="artifacts"></div></section>
+          <section class="panel"><h3>研究时间线</h3><div id="timeline"></div></section>
+          <section class="panel"><h3>计划版本</h3><div id="history"></div></section>
+        </div>
+        <div class="expert-column"><section class="panel expert-panel"><div class="section-title"><h3>你的专家席位</h3><span class="badge">随时介入</span></div><p class="muted">用你的经验指出关键路径，无需先向 Agent 展开全部背景。</p><form id="expertForm"><label>参与方式<select id="expertAction"><option value="steer">调整方向 · 开启新一轮</option><option value="note">补充经验 · 保持当前计划</option><option value="close">阶段判断 · 收束研究</option></select></label><label>专家意见<textarea id="expertText" required maxlength="2000" rows="5" placeholder="入口检查先别纠结，重点查代理转发后的身份绑定。"></textarea></label><p id="actionHint" class="muted">调整方向会归档旧计划，以你的原话规划新一轮。</p><button type="submit" class="wide">提交专家意见 ↗</button></form><div class="expert-rule">原话自动进入知识库候选条目。<br>专家判断与模拟观察分别保留。</div><div id="decision"></div></section><section class="panel"><h3>专家发言</h3><div id="messages"></div></section></div>
+      </div>
+    </div>
+  </section>
+  <section id="knowledgeView" hidden><div class="panel"><h2>把你的经验留给下一轮研究</h2><p class="muted">自动保存原话。你可以编辑提炼、确认适用范围；确认表达准确不等于实验验证。真实研究与演示条目分别检索。</p><label>搜索知识<input id="knowledgeSearch" type="search" placeholder="搜索原话、提炼或目标路径"></label></div><div id="knowledgeList"></div></section>
+</main><script src="/demo.js"></script></body></html>

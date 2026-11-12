@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import time
+from binary_policy import select_arm
 
 SCHEMA = {'type':'object','additionalProperties':False,'properties':{
  'summary':{'type':'string'},
@@ -28,11 +29,16 @@ def run(request, result, workspace, check, persist, log):
         if not source.is_relative_to(base.resolve()): raise ValueError('snapshot path outside target')
         raw = source.read_bytes()
         if hashlib.sha256(raw).hexdigest() != f['sha256']: raise ValueError('目标在分析后发生变化，请重新提交')
+        if f.get('arm_only'):
+            raw, _ = select_arm(raw)
         dest = snapshot / f['path']
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(raw)
     (workspace / 'experiments').mkdir(exist_ok=True)
     shutil.copyfile(Path(__file__).with_name('research_tools.py'), workspace / 'research_tools.py')
+    shutil.copyfile(Path(__file__).with_name('binary_policy.py'), workspace / 'binary_policy.py')
+    for helper in ('dagger_adapter.py', 'hybrid_agent.py'):
+        shutil.copyfile(Path(__file__).with_name(helper), workspace / helper)
     (workspace / 'schema.json').write_text(json.dumps(SCHEMA))
     model = os.environ.get('NEXUS_CODEX_MODEL', 'gpt-6-luna')
     prompt = '''你是本地安全研究 Agent。请实际调用工具完成一个有界研究闭环：
@@ -57,7 +63,10 @@ def run(request, result, workspace, check, persist, log):
     started = time.monotonic()
     outpath, errpath = workspace/'events.jsonl', workspace/'stderr.log'
     with outpath.open('w') as out, errpath.open('w') as err:
-        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=out, stderr=err, text=True, start_new_session=True)
+        from dagger_adapter import executable as dagger_executable
+        environment = dict(os.environ)
+        if dagger_executable(): environment['NEXUS_DAGGER_BIN'] = str(dagger_executable())
+        process = subprocess.Popen(cmd, env=environment, stdin=subprocess.PIPE, stdout=out, stderr=err, text=True, start_new_session=True)
         try:
             process.stdin.write(prompt)
             process.stdin.close()
