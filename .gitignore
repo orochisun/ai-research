@@ -1,0 +1,7 @@
+data/
+__pycache__/
+*.pyc
+.env
+engines/
+research-targets/
+.DS_Store

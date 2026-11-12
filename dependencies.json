@@ -1,0 +1,13 @@
+{
+  "dagger": {
+    "url": "git@git.woa.com:fcding/dagger.git",
+    "commit": "4804fdfd4ca3ac4692ecefdcf0465fff3befad0b",
+    "destination": "engines/dagger",
+    "access": "Requires access to the internal repository"
+  },
+  "cJSON": {
+    "url": "https://github.com/DaveGamble/cJSON.git",
+    "commit": "6d9f2443ab071f86e5d9b43025a40929ec41c46c",
+    "destination": "research-targets/cJSON"
+  }
+}
