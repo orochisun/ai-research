@@ -3,11 +3,13 @@ import json
 import platform
 from pathlib import Path
 import runtime_probe
+import sandbox_profiles
 
 KEYCHAIN='/System/Library/Frameworks/Security.framework/Versions/A/XPCServices/XPCKeychainSandboxCheck.xpc/Contents/MacOS/XPCKeychainSandboxCheck'
 
 def collect(manifest, folder, check, progress, execute):
     folder.mkdir(parents=True,exist_ok=True)
+    sandbox_profiles.collect(manifest,folder/'profiles',check)
     result={'status':'blocked','scope':'真实验证；没有模拟返回值','attempts':[], 'blockers':[]}
     def command(argv,stem,timeout):
         check();out,err=folder/(stem+'.stdout'),folder/(stem+'.stderr')
@@ -15,7 +17,7 @@ def collect(manifest, folder, check, progress, execute):
             code,duration=execute(argv,folder,out,err,check,timeout)
             item={'argv':argv,'exit_code':code,'duration_seconds':duration}
         except (OSError,TimeoutError) as exc:item={'argv':argv,'error':str(exc),'exit_code':None}
-        item.update(stdout=out.read_text(errors='replace')[:60000] if out.exists() else '',stderr=err.read_text(errors='replace')[:10000] if err.exists() else '')
+        item.update(stdout=out.read_text(errors='replace') if out.exists() else '',stderr=err.read_text(errors='replace')[:10000] if err.exists() else '')
         result['attempts'].append(item);return item
     target=manifest['metadata'].get('resolved_binary')
     progress('运行环境调查','实验 Agent：执行已支持的只读探测，记录真实失败及证据缺口')

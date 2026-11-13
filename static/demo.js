@@ -86,6 +86,13 @@ function renderConclusion(r) {
   $('conclusionSource').textContent=update?'最新工具复核':latest?(roleNames[latest.role]+' · '+latest.model):'调查中';
   $('conclusionSummary').textContent=update?.summary || latest?.result.summary || '正在收集证据，确认后的结论会显示在这里。';
   $('conclusionFacts').innerHTML=(update?.facts || []).map(t=>`<p>${esc(t)}</p>`).join('');
+  const actual=r.actual_verification?.revision===r.revision?r.actual_verification:null;
+  if(actual){
+    const reply=actual.reply?.reply;
+    const extensions=Array.isArray(reply?.extensions)?reply.extensions:[];
+    const tokens=extensions.filter(x=>typeof x==='string').map(token=>{const fields=token.split(';');return {path:fields.at(-1),extension_class:fields.find(f=>f.startsWith('com.apple.app-sandbox.'))||'未识别，见原始令牌'};});
+    $('conclusionFacts').innerHTML += '<h3>实际调用与返回路径</h3><pre>'+esc(JSON.stringify({request:actual.request,reply:reply?{'keychain-home':reply['keychain-home'],'keychain-paths':reply['keychain-paths'],'all-paths':reply['all-paths'],extensions:tokens}:actual.reply},null,2))+'</pre><details><summary>完整原始回复（含未脱敏令牌）</summary><pre>'+esc(JSON.stringify(actual.reply,null,2))+'</pre></details>';
+  }
   const gaps=update?.unknowns || latest?.result.unknowns || [];
   $('conclusionGaps').innerHTML=gaps.map(t=>`<li>${esc(t)}</li>`).join('') || '<li>当前暂无已列出的缺口。</li>';
 }

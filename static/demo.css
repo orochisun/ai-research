@@ -5,3 +5,5 @@
 #runtimePanel pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.8 ui-monospace,monospace;color:#b4cddd}.workflow{grid-template-columns:repeat(auto-fit,minmax(145px,1fr))}
 
 #staticAnalysisResult{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,monospace;max-height:480px;overflow:auto}
+
+#conclusionFacts pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,monospace;color:#b4cddd;max-height:420px;overflow:auto}

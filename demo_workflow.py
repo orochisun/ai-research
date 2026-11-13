@@ -7,6 +7,7 @@ import runtime_probe
 import call_graph
 import static_analyzer
 import verification
+import sandbox_profiles
 from pathlib import Path
 import time
 import uuid
@@ -196,24 +197,33 @@ class Engine:
                                 f"匹配 {len(investigation['launch_definitions'])} 项启动配置；采样 {len(investigation['processes'])} 个进程。基础事实与缺口自动交给规划 Agent。", source='tool')
                     self._save(c, run)
                 return
+            sandbox_profiles.collect(manifest, workspace/'profiles', check)
             stage_name=snapshot.get('stages', STAGES)[stage]
             if role=='experimenter' or stage_name=='supplement':
-                verification.collect(manifest,workspace/'verification',check,progress,hybrid_agent.execute)
+                verification_result=verification.collect(manifest,workspace/'verification',check,progress,hybrid_agent.execute)
                 manifest_path=workspace/'evidence.json'
                 manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
             context = {'goal': snapshot['focus'], 'target': snapshot['target'], 'revision': revision,
                        'expert_messages': snapshot['messages'], 'confirmed_knowledge': snapshot['knowledge_refs'],
                        'plan': snapshot['plan'], 'previous_results':[{'role':x['role'],'result':x['result']} for x in snapshot.get('model_results',[]) if x['revision']==revision], 'review_feedback':snapshot.get('reviews',[])[-1:], 'metadata': manifest['metadata'], 'runtime_investigation': manifest.get('runtime_investigation'), 'call_graph': manifest.get('call_graph'), 'static_analysis': {k: v for k, v in manifest.get('static_analysis', {}).items() if k != 'report'}}
+            previous_ids={e['id'] for e in manifest['evidence']}
             outcome = hybrid_agent.run_role(role, context, manifest, workspace / role, check, progress)
+            manifest_path=workspace/'evidence.json'
+            manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
             with self.lock, self.db() as c:
                 run = self._load(c, rid)
                 if not valid(run): return
+                for e in manifest['evidence']:
+                    if e['id'] not in previous_ids:
+                        self._artifact(run,'live_evidence',e['id']+' · '+e['title'],e['output'],source='tool')
                 if role == 'planner':
                     run['manifest_path'] = str(manifest_path)
                     if 'stages' not in run: self._publish_evidence(run, manifest)
                     run['plan'] = outcome['result']['plan']
                 run['manifest_path']=str(manifest_path)
                 if role=='experimenter' or stage_name=='supplement':
+                    if verification_result:
+                        run['actual_verification']=dict(verification_result,revision=revision)
                     for e in manifest['evidence']:
                         if e['id'].startswith('V'):
                             self._artifact(run,'verification',e['title'],e['output'],source='tool')

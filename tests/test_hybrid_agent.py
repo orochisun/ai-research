@@ -218,6 +218,23 @@ class HybridTests(unittest.TestCase):
         self.assertEqual(output['duration_seconds'], 2)
         self.assertIn('typo', (calls[1]/'prompt.txt').read_text())
 
+    def test_full_access_live_output_is_citable_and_persisted(self):
+        import re
+        m=manifest()
+        def fake_execute(argv,cwd,stdout,stderr,*args):
+            self.assertEqual(argv[argv.index('-s')+1],'danger-full-access')
+            prompt=(cwd/'prompt.txt').read_text()
+            self.assertNotIn('不要执行目标或实验',prompt)
+            prefix=re.search(r'L[0-9a-f]{8}_',prompt).group()
+            answer=result();answer['observations']=[dict(statement='actual live output',evidence_id=prefix+'1',quote='@lines:1-1')]
+            (cwd/'result.json').write_text(json.dumps(answer))
+            stdout.write_text(json.dumps(dict(type='item.completed',item=dict(type='command_execution',command='cat profile',exit_code=0,aggregated_output='actual profile rule'))))
+            stderr.write_text('');return 0,1
+        with patch('hybrid_agent.shutil.which',return_value='codex'),patch('hybrid_agent.execute',side_effect=fake_execute):
+            answer=hybrid_agent.run_role('planner',{},m,self.root/'live',lambda:None,lambda *a:None)
+        self.assertEqual(answer['result']['observations'][0]['quote'],'actual profile rule')
+        self.assertEqual(m['evidence'][-1]['output'],'actual profile rule')
+
     def test_correction_is_bounded_and_never_accepts_invalid_quote(self):
         def fake_execute(argv, cwd, stdout, stderr, *args):
             answer = result(); answer['observations'][0]['quote'] = 'invented'
