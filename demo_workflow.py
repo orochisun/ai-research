@@ -237,7 +237,7 @@ class Engine:
                     tasks=outcome['result'].get('task_results',[])
                     gaps=[t for t in tasks if t['status']=='blocked' or t['blocker'].strip()]
                     knowledge_gaps=[k for k in outcome['result'].get('knowledge_checks',[]) if k['status']=='blocked']
-                    ready=bool(tasks) and not gaps and not knowledge_gaps and not outcome['result']['unknowns']
+                    ready=bool(tasks) and not gaps and not knowledge_gaps
                     final=stage_name=='recheck'
                     status='ready_for_expert' if ready else 'research_blocked' if final else 'needs_analysis'
                     run['reviews'].append({'revision':revision,'status':status,'target':'expert' if ready else 'analyst',

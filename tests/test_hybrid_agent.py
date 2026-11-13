@@ -101,6 +101,16 @@ class HybridTests(unittest.TestCase):
         r=self.engine.action(r['id'],{'action':'resume'})
         self.assertEqual(r['stage'],0);self.assertEqual(r['revision'],2)
 
+    def test_scope_limits_do_not_block_completed_plan(self):
+        r=self.create()
+        with self.engine.lock,self.engine.db() as c:
+            r=self.engine._load(c,r['id']);r['stage']=6;r['plan']=['inspect evidence'];self.engine._save(c,r)
+        value=outcome('reviewer');value['result']['unknowns']=['Other OS versions were not tested']
+        value['result']['task_results']=[{'task_index':1,'status':'observed_runtime','conclusion':'sample complete','evidence_ids':['T0'],'attempt':'actual sample','blocker':''}]
+        with patch('hybrid_agent.run_role',return_value=value):
+            self.engine.action(r['id'],{'action':'step'});r=self.wait_job(r['id'])
+        self.assertEqual(r['status'],'waiting_expert')
+
     def test_partial_observation_with_blocker_never_passes_review(self):
         r=self.create()
         with self.engine.lock,self.engine.db() as c:
