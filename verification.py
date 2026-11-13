@@ -1,6 +1,7 @@
 """Bounded real verification actions; unsupported probes are explicit blockers."""
 import json
 import platform
+import plistlib
 from pathlib import Path
 import runtime_probe
 import sandbox_profiles
@@ -11,10 +12,10 @@ def collect(manifest, folder, check, progress, execute):
     folder.mkdir(parents=True,exist_ok=True)
     sandbox_profiles.collect(manifest,folder/'profiles',check)
     result={'status':'blocked','scope':'真实验证；没有模拟返回值','attempts':[], 'blockers':[]}
-    def command(argv,stem,timeout):
+    def command(argv,stem,timeout,stdin_path=None):
         check();out,err=folder/(stem+'.stdout'),folder/(stem+'.stderr')
         try:
-            code,duration=execute(argv,folder,out,err,check,timeout)
+            code,duration=execute(argv,folder,out,err,check,timeout,stdin_path) if stdin_path else execute(argv,folder,out,err,check,timeout)
             item={'argv':argv,'exit_code':code,'duration_seconds':duration}
         except (OSError,TimeoutError) as exc:item={'argv':argv,'error':str(exc),'exit_code':None}
         item.update(stdout=out.read_text(errors='replace') if out.exists() else '',stderr=err.read_text(errors='replace')[:10000] if err.exists() else '')
@@ -36,6 +37,25 @@ def collect(manifest, folder, check, progress, execute):
                 reply=json.loads(probe['stdout']);result['reply']=reply
                 result['status']='observed' if reply.get('status')=='reply' else 'blocked'
             except ValueError:result['blockers'].append('探测未返回有效 JSON，查看原始输出')
+            if result.get('reply',{}).get('status')=='reply':
+                # A separate, minimally entitled App Sandbox client checks the received capabilities.
+                info=folder/'access-info.plist';entitlements=folder/'access.entitlements'
+                info.write_bytes(plistlib.dumps({'CFBundleIdentifier':'local.ssj.boundary-check','CFBundleName':'SSJ Boundary Check','CFBundleVersion':'1'}))
+                entitlements.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox':True}))
+                access=folder/'access-probe'
+                compiled=command(['/usr/bin/clang','-arch','arm64','-fobjc-arc','-framework','Foundation',
+                    '-Wl,-sectcreate,__TEXT,__info_plist,'+str(info),str(Path(__file__).parent/'tools/keychain_access_probe.m'),'-o',str(access)],'access-build',30)
+                if compiled['exit_code']==0:
+                    signed=command(['/usr/bin/codesign','--force','--sign','-','--identifier','local.ssj.boundary-check','--entitlements',str(entitlements),str(access)],'access-sign',15)
+                    if signed['exit_code']==0:
+                        measurement=command([str(access)],'access-result',15,folder/'request.stdout')
+                        try:
+                            result['access_comparison']=json.loads(measurement['stdout'])
+                            result['access_comparison']['exit_code']=measurement['exit_code']
+                            result['access_comparison']['entitlements']={'com.apple.security.app-sandbox':True}
+                        except ValueError:result['blockers'].append('Sandbox 客户端没有有效 JSON；查看 access-result 的退出码和 stderr')
+                    else:result['blockers'].append('Sandbox 客户端签名失败，查看 access-sign')
+                else:result['blockers'].append('Sandbox 客户端编译失败，查看 access-build')
             try:
                 mac=runtime_probe.MacProbe()
                 result['runtime_samples']=[mac.sample(pid,Path(target)) for pid in mac.pids(Path(target))[:4]]

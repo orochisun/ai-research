@@ -7,3 +7,5 @@
 #staticAnalysisResult{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,monospace;max-height:480px;overflow:auto}
 
 #conclusionFacts pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,monospace;color:#b4cddd;max-height:420px;overflow:auto}
+
+.comparison-scroll{overflow:auto}#conclusionFacts table{border-collapse:collapse;width:100%;font-size:12px}#conclusionFacts th,#conclusionFacts td{text-align:left;border-bottom:1px solid var(--line);padding:8px;overflow-wrap:anywhere}

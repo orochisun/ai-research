@@ -91,6 +91,11 @@ function renderConclusion(r) {
     const reply=actual.reply?.reply;
     const extensions=Array.isArray(reply?.extensions)?reply.extensions:[];
     const tokens=extensions.filter(x=>typeof x==='string').map(token=>{const fields=token.split(';');return {path:fields.at(-1),extension_class:fields.find(f=>f.startsWith('com.apple.app-sandbox.'))||'未识别，见原始令牌'};});
+    if(actual.access_comparison){
+      const a=actual.access_comparison;
+      const opened=x=>x.open_readonly_success?'成功':'errno '+x.open_errno;
+      $('conclusionFacts').innerHTML += '<h3>Sandbox 客户端：消费令牌前后</h3><p>PID '+esc(a.pid)+' · sandbox_check(NULL)='+esc(a.sandbox_check_null)+' · 令牌消费返回值：'+esc((a.consume||[]).map(t=>t.handle).join(', '))+'</p><div class="comparison-scroll"><table><thead><tr><th>实际路径</th><th>只读打开：前 → 后</th><th>Sandbox 读/写检查：前 → 后</th></tr></thead><tbody>'+(a.before||[]).map(b=>{const after=(a.after||[]).find(x=>x.path===b.path);return '<tr><td>'+esc(b.path)+'</td><td>'+esc(opened(b)+' → '+(after?opened(after):'缺失'))+'</td><td>'+esc(b.file_read_data+'/'+b.file_write_data+' → '+(after?after.file_read_data+'/'+after.file_write_data:'缺失'))+'</td></tr>';}).join('')+'</tbody></table></div><p class="muted">Sandbox 检查 0 表示允许；打开 errno 2 表示文件不存在。仅打开后关闭，未读取内容。令牌来自另一个普通会话进程，不证明此客户端能自行获取令牌。</p><details><summary>完整权限对照记录</summary><pre>'+esc(JSON.stringify(a,null,2))+'</pre></details>';
+    }
     $('conclusionFacts').innerHTML += '<h3>实际调用与返回路径</h3><pre>'+esc(JSON.stringify({request:actual.request,reply:reply?{'keychain-home':reply['keychain-home'],'keychain-paths':reply['keychain-paths'],'all-paths':reply['all-paths'],extensions:tokens}:actual.reply},null,2))+'</pre><details><summary>完整原始回复（含未脱敏令牌）</summary><pre>'+esc(JSON.stringify(actual.reply,null,2))+'</pre></details>';
   }
   const gaps=update?.unknowns || latest?.result.unknowns || [];

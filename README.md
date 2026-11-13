@@ -147,3 +147,5 @@ XPCKeychainSandboxCheck 的实验探测器仅对系统固定路径发出一次 `
 各模型角色必须逐条输出「专家经验验证记录」：知识 ID/版本、适用理由、实际核查动作、结论和证据，状态为已验证、不适用或受阻待验证。遗漏、重复、版本不符、未知证据会触发输出校验纠错；评审的受阻项阻止通过。结构与引用校验不保证模型判断正确，仍可查看原始证据复核。内置采集器仍使用现有工具；模型可通过本机工具补充采集与实验，实际执行失败后记录命令、错误和后续方法。
 
 XPCKeychainSandboxCheck 探测会保存完整请求与回复，包括原始 sandbox extension 字符串，不再替换为脱敏占位符。实验阶段同时读取本机 `/System/Library/Sandbox/Profiles/application.sb` 及其 literal imports，保留路径、哈希与全文供逐行引用。研究结论顶部直接展示实际调用与完整返回。令牌内容、profile 静态规则和真实客户端消费前后结果需分别判断，不能将存在令牌直接解释为新增权限。
+
+该目标的默认实验还会构建 ARM App Sandbox 客户端（仅 `com.apple.security.app-sandbox=true`，ad-hoc 签名并嵌入 bundle identifier），通过标准输入接收普通会话探测的实际回复，记录令牌消费返回值及消费前后的 `sandbox_check(file-read-data/file-write-data)`、`open(O_RDONLY)` 结果。只打开并关闭，不读取或写入 Keychain 内容；`ENOENT` 与权限拒绝分开报告。此实验不证明 sandbox 客户端可以自行连接服务取得令牌，也不证明 Keychain 条目可解密。
