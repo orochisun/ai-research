@@ -200,7 +200,7 @@ def investigate(target, manifest, workspace, check, progress, execute):
             if not result['processes']:
                 result['limitations'].append('未取得稳定的 ARM 目标进程；进程匹配未成功。实际启动尝试以 attempts 为准，未匹配 launchd 定义时不代表已尝试启动 XPC bundle。UID、运行时权限与 sandbox 保持未知。')
         except (OSError, AttributeError) as exc: result['limitations'].append(str(exc))
-    outputs = {e['id']: e['output'] for e in evidence}
+    outputs = {e['id']: (Path(e['line_source_path']).read_text(errors='replace') if e.get('content_storage')=='file' and e['id'] in ('T2','T3') else e['output']) for e in evidence}
     # Symbol references are leads, not established inbound endpoints.
     ipc_lines = [line for line in outputs.get('T2', '').splitlines() if re.search(r'xpc_|NSXPC|CFMessagePort|bootstrap_|mach_msg|audit_token|SecTask|socket|listen|accept', line)]
     disassembly = next((e for e in evidence if e['id'] == 'T7'), {})

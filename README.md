@@ -149,3 +149,5 @@ XPCKeychainSandboxCheck 的实验探测器仅对系统固定路径发出一次 `
 XPCKeychainSandboxCheck 探测会保存完整请求与回复，包括原始 sandbox extension 字符串，不再替换为脱敏占位符。实验阶段同时读取本机 `/System/Library/Sandbox/Profiles/application.sb` 及其 literal imports，保留路径、哈希与全文供逐行引用。研究结论顶部直接展示实际调用与完整返回。令牌内容、profile 静态规则和真实客户端消费前后结果需分别判断，不能将存在令牌直接解释为新增权限。
 
 该目标的默认实验会构建 ARM App Sandbox 客户端（仅 `com.apple.security.app-sandbox=true`，ad-hoc 签名并嵌入 bundle identifier）。标准输入只传基线路径，不传令牌；同一个进程记录请求前基线，直接通过 `xpc_connection_create` 请求 `GrantKeychainPaths`，保存完整回复，再记录消费前、消费后和释放后的 `sandbox_check(file-read-data/file-write-data)` 与 `open(O_RDONLY)` 结果。只打开并关闭，不读取或写入 Keychain 内容；`ENOENT` 与权限拒绝分开报告。仅在 Sandbox 已启用、直接取得回复、全部令牌消费成功且请求前基线覆盖复测路径时标记 `end_to_end=true`。普通会话请求保留作对照及路径发现，不能代替 Sandbox 客户端自己的请求结果。
+
+大型静态输出（例如 passd 的全量反汇编）直接完整写入 stdout/stderr 文件，不受模型事件日志的 24 MiB 限制。较大的证据在清单中只保存文件索引，标记 `content_storage=file`，附原始文件路径、字节数和行数；Agent 使用 `rg -n` 定位、`sed -n` 分段读取。该证据的 `@lines` 引用直接按原文件行号校验，文件尾部也可引用。命令超时或失败会明确标记不完整，不冒充全量成功。

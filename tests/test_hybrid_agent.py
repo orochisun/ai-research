@@ -265,6 +265,45 @@ class HybridTests(unittest.TestCase):
             answer=result();answer['observations'][0]['quote']=locator
             with self.assertRaises(ValueError):hybrid_agent.validate_result(answer,evidence)
 
+    def test_static_output_limit_retains_partial_evidence_and_continues(self):
+        def execute(argv,cwd,stdout,stderr,*args,**kwargs):
+            stdout.write_text('captured ARM disassembly');stderr.write_text('')
+            if '-tvV' in argv:raise hybrid_agent.OutputLimitExceeded('bounded output')
+            return 0,.1
+        with patch('hybrid_agent.shutil.which',side_effect=lambda x:x),patch('hybrid_agent.execute',side_effect=execute):
+            m=hybrid_agent.collect(str(self.target),self.root/'partial',lambda:None,lambda *a:None)
+        t7=next(e for e in m['evidence'] if e['id']=='T7')
+        self.assertEqual(t7['capture_status'],'partial');self.assertEqual(t7['stop_reason'],'output_limit')
+        self.assertTrue(t7['truncated']);self.assertIsNone(t7['exit_code'])
+        self.assertIn('partial',t7['output']);self.assertIn('captured ARM disassembly',t7['output'])
+        self.assertTrue((self.root/'partial/evidence.json').exists())
+
+    def test_large_static_output_is_complete_file_and_tail_is_citable(self):
+        text='head\n'+'instruction\n'*100+'tail sentinel\n'
+        def execute(argv,cwd,stdout,stderr,*args,**kwargs):
+            self.assertIsNone(kwargs['output_limit'])
+            stdout.write_text(text);stderr.write_text('');return 0,.1
+        with patch('hybrid_agent.MAX_OUTPUT',50),patch('hybrid_agent.shutil.which',side_effect=lambda x:x),patch('hybrid_agent.execute',side_effect=execute):
+            m=hybrid_agent.collect(str(self.target),self.root/'full',lambda:None,lambda *a:None)
+        t7=next(e for e in m['evidence'] if e['id']=='T7')
+        self.assertFalse(t7['truncated']);self.assertEqual(t7['capture_status'],'complete')
+        self.assertEqual(t7['content_storage'],'file');self.assertEqual(Path(t7['line_source_path']).read_text(),text)
+        answer=result();answer['observations']=[dict(statement='tail exists',evidence_id='T7',quote='@lines:102-102')]
+        hybrid_agent.validate_result(answer,m['evidence'])
+        self.assertEqual(answer['observations'][0]['quote'],'tail sentinel')
+
+    def test_file_capture_can_exceed_default_limit_without_losing_bytes(self):
+        with patch('hybrid_agent.MAX_EXEC_OUTPUT',1024):
+            code,_=hybrid_agent.execute([sys.executable,'-c','import os,time; os.write(1,b"x"*2048); time.sleep(.3)'],
+                self.root,self.root/'full.stdout',self.root/'full.stderr',lambda:None,5,output_limit=None)
+        self.assertEqual(code,0);self.assertEqual((self.root/'full.stdout').stat().st_size,2048)
+
+    def test_real_output_limit_stops_child_and_keeps_logs(self):
+        with patch('hybrid_agent.MAX_EXEC_OUTPUT',1024),self.assertRaises(hybrid_agent.OutputLimitExceeded):
+            hybrid_agent.execute([sys.executable,'-c','import os,time; os.write(1,b"x"*2048); time.sleep(30)'],
+                self.root,self.root/'large.stdout',self.root/'large.stderr',lambda:None,5)
+        self.assertEqual((self.root/'large.stdout').stat().st_size,2048)
+
     def test_cancelled_subprocess_is_reaped(self):
         calls = []
         def check():

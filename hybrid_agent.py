@@ -1,5 +1,6 @@
 """Read-only binary evidence collection and real Codex planning/analysis."""
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from binary_policy import select_arm
 MODEL = 'gpt-6-luna'
 MAX_BINARY = 64 * 1024 * 1024
 MAX_OUTPUT = 180000
+MAX_EXEC_OUTPUT = 24 * 1024 * 1024
 
 
 def obj(properties):
@@ -75,6 +77,11 @@ def validate_tasks(result, plan, evidence):
     return tasks
 
 
+class OutputLimitExceeded(ValueError):
+    """The child was stopped; already captured output remains available."""
+    pass
+
+
 class Superseded(Exception):
     pass
 
@@ -105,7 +112,8 @@ def stop_process(process):
             process.wait()
 
 
-def execute(argv, cwd, stdout, stderr, check, timeout, stdin_path=None):
+def execute(argv, cwd, stdout, stderr, check, timeout, stdin_path=None, output_limit="default"):
+    if output_limit == "default": output_limit = MAX_EXEC_OUTPUT
     started = time.monotonic()
     check()
     with stdout.open('wb') as out, stderr.open('wb') as err:
@@ -115,8 +123,8 @@ def execute(argv, cwd, stdout, stderr, check, timeout, stdin_path=None):
                 while process.poll() is None:
                     check()
                     if time.monotonic() - started > timeout: raise TimeoutError(f'执行超过 {timeout} 秒')
-                    if stdout.stat().st_size + stderr.stat().st_size > 24 * 1024 * 1024:
-                        raise ValueError('执行日志超过 24 MiB 限制')
+                    if output_limit is not None and stdout.stat().st_size + stderr.stat().st_size > output_limit:
+                        raise OutputLimitExceeded(f'执行日志超过 {output_limit} 字节限制，已停止子进程')
                     time.sleep(.2)
                 check()
                 return process.returncode, round(time.monotonic() - started, 2)
@@ -156,17 +164,30 @@ def collect(target, workspace, check, progress):
                              'argv': [name, *args], 'truncated': False, 'source': 'tool'})
             continue
         progress('采集静态证据', f'{eid} · {name} {" ".join(args[:-1])}')
+        started = time.monotonic()
+        stop_reason = None
         try:
-            code, duration = execute([tool, *args], workspace, out, err, check, 45)
-        except TimeoutError:
-            code, duration = None, 45
-        with out.open('rb') as stream: output = stream.read(MAX_OUTPUT).decode(errors='replace')
-        with err.open('rb') as stream: diagnostic = stream.read(20000).decode(errors='replace')
-        evidence.append({'id': eid, 'title': name + ' ' + ' '.join(args[:-1]), 'argv': [tool, *args],
-                         'exit_code': code, 'architecture': selection['architecture'], 'duration_seconds': duration,
-                         'output': 'COMMAND: ' + ' '.join([tool, *args]) + '\nARCHITECTURE: ' + selection['architecture'] + '\n' + output + '\n[stderr]\n' + diagnostic,
-                         'truncated': out.stat().st_size > MAX_OUTPUT or err.stat().st_size > 20000,
-                         'stdout_path': str(out), 'stderr_path': str(err), 'source': 'tool'})
+            code, duration = execute([tool, *args], workspace, out, err, check, 180, output_limit=None)
+        except (TimeoutError, OutputLimitExceeded) as exc:
+            code, duration = None, round(time.monotonic() - started, 2)
+            stop_reason = 'output_limit' if isinstance(exc, OutputLimitExceeded) else 'timeout'
+            progress('采集静态证据', f'{eid} · {exc}；保留部分证据并继续，不能视为完整覆盖')
+        stdout_bytes,stderr_bytes=out.stat().st_size,err.stat().st_size
+        file_backed=stdout_bytes>MAX_OUTPUT or stderr_bytes>20000
+        status='partial' if stop_reason else 'complete' if code==0 else 'failed'
+        header='COMMAND: '+' '.join([tool,*args])+'\nARCHITECTURE: '+selection['architecture']+'\nCAPTURE: '+status
+        entry={'id':eid,'title':name+' '+' '.join(args[:-1]),'argv':[tool,*args],
+               'exit_code':code,'architecture':selection['architecture'],'duration_seconds':duration,
+               'capture_status':status,'stop_reason':stop_reason,'stdout_bytes':stdout_bytes,'stderr_bytes':stderr_bytes,
+               'truncated':bool(stop_reason),'stdout_path':str(out),'stderr_path':str(err),'source':'tool'}
+        if file_backed:
+            with out.open('rb') as stream:line_count=sum(1 for _ in stream)
+            entry.update(content_storage='file',line_source_path=str(out),line_count=line_count,
+                output=header+'\n完整输出保存在文件，不在上下文中内嵌。请使用 rg -n 检索、sed -n 分段读取；@lines 引用以下 stdout 文件中的原始行号。'
+                +'\nSTDOUT: '+str(out)+'\nSTDERR: '+str(err)+'\nSTDOUT_LINES: '+str(line_count))
+        else:
+            entry['output']=header+'\n'+out.read_text(errors='replace')+'\n[stderr]\n'+err.read_text(errors='replace')
+        evidence.append(entry)
     check()
     manifest = {'metadata': metadata, 'evidence': evidence}
     (workspace / 'evidence.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
@@ -192,10 +213,19 @@ def validate_result(result, evidence):
         locator = re.fullmatch(r'@lines:(\d+)-(\d+)', observation['quote'])
         if locator and source:
             first, last = map(int, locator.groups())
+            if source.get('content_storage')=='file':
+                if not 1 <= first <= last <= source['line_count'] or last-first >=80:
+                    raise ValueError('文件证据行号越界或引用超过 80 行')
+                with Path(source['line_source_path']).open(errors='replace') as stream:
+                    excerpt=''.join(itertools.islice(stream,first-1,last)).rstrip('\r\n')
+                if not excerpt.strip():raise ValueError('文件证据引用为空')
+                observation['quote']=excerpt
+                continue
             lines = source['output'].splitlines(keepends=True)
             if not 1 <= first <= last <= len(lines) or last-first >= 80:
                 raise ValueError('模型证据行号越界或引用超过 80 行')
             observation['quote'] = ''.join(lines[first-1:last]).rstrip('\r\n')
+        if source and source.get('content_storage')=='file':raise ValueError('文件证据必须使用原文件 @lines 行号')
         if not source or not observation['quote'].strip() or observation['quote'] not in source['output']:
             raise ValueError(f"模型事实引用未匹配原始工具输出：{observation['evidence_id']} · {observation['quote'][:240]!r}")
     for inference in result['inferences']:
@@ -237,7 +267,7 @@ def run_role(role, context, manifest, workspace, check, progress, _attempt=1):
     if knowledge: properties['knowledge_checks'] = {'type':'array','items':KNOWLEDGE_SCHEMA}
     (workspace / 'schema.json').write_text(json.dumps(obj(properties)))
     (workspace / 'evidence-lines.json').write_text(json.dumps([{
-        'id': e['id'], 'title': e['title'], 'lines': [f'{i}: {line}' for i,line in enumerate(e['output'].splitlines(),1)]
+        'id': e['id'], 'title': e['title'], 'line_source_path':e.get('line_source_path'), 'line_count':e.get('line_count'), 'lines': [f'{i}: {line}' for i,line in enumerate(e['output'].splitlines(),1)]
         } for e in manifest['evidence']], ensure_ascii=False, indent=2))
     prompt = '''你是安全研究工作台中的角色：''' + role + '''。使用中文输出。
 真实任务：只分析 ARM。二进制分析工具输入均已提取为单一 ARM 切片，禁止分析 x86；原文件可能是 universal，不能将原容器架构当成当前证据架构。根据 evidence.json 中实际采集的运行时调查和二进制静态证据，完成规划或分析。
@@ -247,13 +277,13 @@ S1 如存在是用户配置的静态分析软件的实际输出，report 保留�
 entitlements.status=absent 表示查询成功并确认无 entitlement，是确定结论，不是待补查项；不是每个 binary 都需要 entitlement。查询失败或无法解码才保留未知。
 默认研究顺序不可跳过：先读取 runtime_investigation 和 R 编号证据，给出运行时 UID/EUID、entitlements、sandbox 及其采样范围的事实结论；再梳理 IPC 注册端点、接收入口、消息解析与调用方鉴权；最后分析功能实现。基础事实不交给专家判断。若有 C 编号的 IDA 反编译、汇编和 CFG，必须继续自动还原 IPC 鉴权：具体 entitlement 字符串、类型/值判断、每个允许与拒绝分支、拒绝时返回值及是否到达消息解析。不要再问专家该查哪个 entitlement 或哪些调用方可进入。按调用方类别给出静态放行规则，并注明 Mach 端点可达性前提；没有运行请求对照就不能称为端到端动态验证。C99 如存在仅校准 API 语义，不是目标处理请求的实验。C98 如存在是最小目标请求对照；空回复不能区分鉴权拒绝与解析失败，服务日志没有客户端 PID 时只提供时间相关证据，不要夸大为完整调用方矩阵验证。调用图不得补全未解析间接调用、ObjC receiver 或跨库函数体，UNVERIFIED 不能当成漏洞。已采集到的基础结论不要列为待专家确认；采集失败明确写技术原因和下一步查证方法。静态 entitlement、profile 或 API 符号不能替代运行时状态，不同启动方式的身份不能互相代表。iOS 没有设备证据就不能用 macOS 结果代替。
 规划角色提出具体且有序的研究步骤；分析角色结合规划结果，对实际符号、依赖、字符串、反汇编片段作分析。
-observations 每条只陈述一个引用片段直接支持的事实，禁止一句罗列多个事实而 quote 只支持其中之一。架构必须依据工具的 architecture 字段和命令参数；不能把 file 列出的架构列表当成每条反汇编的架构。ARM64 的 bl、cbz、x0/w0 指令或寄存器不能标注为 x86_64。observations 只写有直接证据的客观观察，每条 evidence_id 必须为提供的 T、R、C、D、S、P、V 或本次新增工具证据编号，quote 必须写成 "@lines:起始行-结束行"（例如 "@lines:12-15"）。行号读取 evidence-lines.json 对应 id 的 lines 前缀，从 1 开始，最多 80 行；程序将按行号提取原始证据，不要手写汇编或拼接不连续片段。每条观察只引用直接支持该事实的行；不同分支可分成多条观察。
+observations 每条只陈述一个引用片段直接支持的事实，禁止一句罗列多个事实而 quote 只支持其中之一。架构必须依据工具的 architecture 字段和命令参数；不能把 file 列出的架构列表当成每条反汇编的架构。ARM64 的 bl、cbz、x0/w0 指令或寄存器不能标注为 x86_64。observations 只写有直接证据的客观观察，每条 evidence_id 必须为提供的 T、R、C、D、S、P、V 或本次新增工具证据编号，quote 必须写成 "@lines:起始行-结束行"（例如 "@lines:12-15"）。内嵌证据行号读取 evidence-lines.json 对应 id 的 lines 前缀；content_storage=file 的证据行号取 line_source_path 原始文件。均从 1 开始，最多 80 行；程序将按行号提取原始证据，不要手写汇编或拼接不连续片段。每条观察只引用直接支持该事实的行；不同分支可分成多条观察。
 inferences 是与观察分离的解释或假设，引用证据并写清 limitation。不能从符号出现推断一定可达，也不能把字符串提示当成已执行行为。
 unknowns 写未能确认的问题，expert_questions 把研究价值、优先级和风险判断留给人类专家。
 真实模式实验阶段使用 V 编号的实际探测记录，失败也是实测结果，不得编造成功。没有 V 记录或本次实际命令输出时不得声称已执行实验。运行时调查属于真实环境采样，可以陈述采样确认的事实，但不能声称做了漏洞动态验证或确认漏洞。
 路径规则核查必须区分 /Library 和 _HOME/Library，检查针对具体路径的额外 allow、deny 和宏展开；不能把系统 Preferences 拒绝套到用户 Preferences，也不能忽略明确的 file-write* 规则而声称令牌新增写权限。V 的 access_comparison 如存在，包含独立 App Sandbox 客户端消费实际令牌前后的 sandbox_check 和 open(O_RDONLY) 结果：open_errno=2 是 ENOENT，不能解释成 EACCES/EPERM。须检查 end_to_end 字段：为 true 时是同一 Sandbox 客户端在 pre_request 基线之后直接请求服务、取得并消费自己的令牌；为 false 或缺失时不能声称端到端。没有读取文件内容，不代表解密 Keychain。
 P 编号是本机 application.sb 及其 imports 实际内容，必须检查 home-subpath 的 _HOME 展开、allow/deny、UUID 子目录例外和 extension-class。把实际返回路径与已有规则逐项比较，区分已有读取权限、写权限、令牌授予范围及已消费实测。没有动态对照不能声称动态验证，但不能因此拒绝给出有证据的静态规则结论。V 新记录的 reply.reply 为完整实际返回，包括 extensions；旧记录脱敏不代表新记录也脱敏。结论先给具体调用、请求字段、返回路径和令牌类别/路径及对应规则，不能用“字典/数组”代替内容；完整令牌保留在原始回复中。评审必须检查返工新增的证据和方法是否消除了原缺口，不能把重复同一探测当成完成返工。
-返回符合 schema 的 JSON，observations 4 到 12 条，plan 3 到 6 项，内容简洁具体。先读取 evidence.json 与 evidence-lines.json，按需要继续使用工具补证，不限制为 8 次调用。
+返回符合 schema 的 JSON，observations 4 到 12 条，plan 3 到 6 项，内容简洁具体。先读取 evidence.json 与 evidence-lines.json。content_storage=file 表示完整工具输出在 line_source_path 文件中，清单只是索引，不是截断的反汇编；使用 rg -n 定位函数/符号再用 sed -n 按需分段读取，不要一次 cat 巨大文件。该证据 ID 的 @lines 必须使用 line_source_path 文件原始行号（不是索引 lines 的行号），程序直接从文件核验引用。按需要继续使用工具补证，不限制为 8 次调用。
 研究上下文：
 ''' + json.dumps(context, ensure_ascii=False)
     if require_tasks:
@@ -288,7 +318,7 @@ P 编号是本机 application.sb 及其 imports 实际内容，必须检查 home
         progress('模型引用自动纠错', f'{exc}；保留原始输出，重新核对证据（最多一次）。')
         repair_context = dict(context, validation_feedback={
             'error': str(exc),
-            'instruction': '上一份输出未通过校验。重新读取 evidence-lines.json，quote 使用 @lines:起始行-结束行，禁止手写、改写或拼接符号。重新提交完整结果；所有观察仍必须有直接证据。',
+            'instruction': '上一份输出未通过校验。重新读取 evidence-lines.json；文件证据读取 line_source_path 原文件。quote 使用 @lines:起始行-结束行，禁止手写、改写或拼接符号。重新提交完整结果；所有观察仍必须有直接证据。',
             'rejected_result': (workspace / 'result.json').read_text()[:24000]})
         repaired = run_role(role, repair_context, manifest, workspace / 'retry-2', check, progress, _attempt=2)
         repaired['duration_seconds'] = round(duration + repaired['duration_seconds'], 2)
