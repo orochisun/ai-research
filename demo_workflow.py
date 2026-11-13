@@ -262,6 +262,10 @@ class Engine:
             with self.lock, self.db() as c:
                 run = self._load(c, rid)
                 if valid(run):
+                    if 'manifest' in locals():
+                        failed_manifest=workspace/'failed-evidence.json'
+                        failed_manifest.write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
+                        run['manifest_path']=str(failed_manifest)
                     run['active_job'], run['status'], run['error'] = None, 'failed', str(exc)[:1200]
                     run['roles'][role] = 'failed'
                     self._event(run, role, '真实模型阶段失败', run['error'] + '；未回退为模拟结果，可恢复重试。', source='system')

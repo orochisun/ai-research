@@ -268,6 +268,16 @@ class HybridTests(unittest.TestCase):
             answer=result();answer['observations'][0]['quote']=locator
             with self.assertRaises(ValueError):hybrid_agent.validate_result(answer,evidence)
 
+    def test_legacy_truncated_evidence_keeps_old_numbers_and_adds_full_file(self):
+        raw=self.root/'legacy.stdout.txt';raw.write_text('first\nsecond\ntail\n')
+        m={'evidence':[dict(id='T7',title='disassembly',output='old header\nfirst',truncated=True,exit_code=0,stdout_path=str(raw))]}
+        hybrid_agent.index_legacy_files(m);hybrid_agent.index_legacy_files(m)
+        self.assertEqual(len(m['evidence']),2)
+        self.assertEqual(m['evidence'][0]['output'],'old header\nfirst')
+        answer=result();answer['inferences']=[];answer['observations']=[dict(statement='tail',evidence_id='T7F',quote='@lines:3-3')]
+        hybrid_agent.validate_result(answer,m['evidence'])
+        self.assertEqual(answer['observations'][0]['quote'],'tail')
+
     def test_disjoint_citations_keep_explicit_boundaries(self):
         evidence=[{'id':'T0','output':'first\nnot cited\nthird\n'}]
         answer=result();answer['observations'][0]['quote']='@lines:1-1\n@lines:3-3'

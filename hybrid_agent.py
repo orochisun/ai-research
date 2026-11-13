@@ -260,7 +260,25 @@ def capture_live_evidence(events_path, prefix, workspace):
     return evidence
 
 
+def index_legacy_files(manifest):
+    ids={e['id'] for e in manifest['evidence']}
+    additions=[]
+    for e in manifest['evidence']:
+        path=e.get('stdout_path')
+        if not (e.get('truncated') and e.get('exit_code')==0 and path and not e.get('content_storage') and e['id']+'F' not in ids): continue
+        source=Path(path)
+        if not source.is_file(): continue
+        with source.open(errors='replace') as stream: count=sum(1 for _ in stream)
+        full=dict(e,id=e['id']+'F',title=e['title']+' · 完整原始文件',content_storage='file',
+                  line_source_path=str(source),line_count=count,stdout_bytes=source.stat().st_size,
+                  capture_status='complete',truncated=False,
+                  output=f"完整原始输出：{source}\n总行数：{count}\n使用此编号引用原始 stdout 行号；旧编号 {e['id']} 保留历史摘录行号。")
+        additions.append(full)
+    manifest['evidence'].extend(additions)
+
+
 def run_role(role, context, manifest, workspace, check, progress, _attempt=1):
+    index_legacy_files(manifest)
     executable = shutil.which('codex')
     if not executable: raise ValueError('未找到 codex CLI，请先安装并登录')
     workspace.mkdir(parents=True, exist_ok=True)
@@ -271,7 +289,7 @@ def run_role(role, context, manifest, workspace, check, progress, _attempt=1):
     if knowledge: properties['knowledge_checks'] = {'type':'array','items':KNOWLEDGE_SCHEMA}
     (workspace / 'schema.json').write_text(json.dumps(obj(properties)))
     (workspace / 'evidence-lines.json').write_text(json.dumps([{
-        'id': e['id'], 'title': e['title'], 'line_source_path':e.get('line_source_path'), 'line_count':e.get('line_count'), 'lines': [f'{i}: {line}' for i,line in enumerate(e['output'].splitlines(),1)]
+        'id': e['id'], 'title': e['title'], 'content_storage':e.get('content_storage'), 'line_source_path':e.get('line_source_path'), 'line_count':e.get('line_count'), 'lines': [f'{i}: {line}' for i,line in enumerate(e['output'].splitlines(),1)]
         } for e in manifest['evidence']], ensure_ascii=False, indent=2))
     prompt = '''你是安全研究工作台中的角色：''' + role + '''。使用中文输出。
 真实任务：只分析 ARM。二进制分析工具输入均已提取为单一 ARM 切片，禁止分析 x86；原文件可能是 universal，不能将原容器架构当成当前证据架构。根据 evidence.json 中实际采集的运行时调查和二进制静态证据，完成规划或分析。
@@ -306,6 +324,7 @@ P 编号是本机 application.sb 及其 imports 实际内容，必须检查 home
                   '不需要重复已完成的系统探测或读取全部无关证据。提交符合 schema.json 的完整 JSON。\n'
                   + json.dumps({'plan':context.get('plan'), 'confirmed_knowledge':knowledge,
                                 'validation_feedback':context.get('validation_feedback')},ensure_ascii=False))
+    prompt += '\n条件式计划只在条件成立时执行：例如 D1 若用于参考才核对原件。D1 未提供且本次没有依赖其结论，或 S1 明确 disabled，属于工具适用范围，不应仅因此判定研究阻塞。不得为了通过评审忽略实际使用过但无法核验的报告。历史截断证据有完整 stdout 时提供独立 F 后缀编号（例如 T7F），原文件行号必须引用该 F 编号；旧编号保留历史摘录行号。'
     prompt_path = workspace / 'prompt.txt'
     prompt_path.write_text(prompt)
     out, err = workspace / 'events.jsonl', workspace / 'stderr.log'
