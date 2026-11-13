@@ -210,21 +210,25 @@ def validate_result(result, evidence):
             raise ValueError('模型观察格式无效')
         if not all(isinstance(v, str) for v in observation.values()): raise ValueError('模型观察类型无效')
         source = sources.get(observation['evidence_id'])
-        locator = re.fullmatch(r'@lines:(\d+)-(\d+)', observation['quote'])
-        if locator and source:
-            first, last = map(int, locator.groups())
-            if source.get('content_storage')=='file':
-                if not 1 <= first <= last <= source['line_count'] or last-first >=80:
-                    raise ValueError('文件证据行号越界或引用超过 80 行')
-                with Path(source['line_source_path']).open(errors='replace') as stream:
-                    excerpt=''.join(itertools.islice(stream,first-1,last)).rstrip('\r\n')
-                if not excerpt.strip():raise ValueError('文件证据引用为空')
-                observation['quote']=excerpt
-                continue
-            lines = source['output'].splitlines(keepends=True)
-            if not 1 <= first <= last <= len(lines) or last-first >= 80:
-                raise ValueError('模型证据行号越界或引用超过 80 行')
-            observation['quote'] = ''.join(lines[first-1:last]).rstrip('\r\n')
+        locator = observation['quote'].strip()
+        if source and re.fullmatch(r'@lines:\d+-\d+(?:(?:\s*,\s*(?:@lines:)?|\n@lines:)\d+-\d+)*', locator):
+            ranges = [tuple(map(int, pair)) for pair in re.findall(r'(\d+)-(\d+)', locator)]
+            file_backed = source.get('content_storage') == 'file'
+            lines = None if file_backed else source['output'].splitlines(keepends=True)
+            count = source['line_count'] if file_backed else len(lines)
+            if any(not 1 <= first <= last <= count for first,last in ranges) or sum(last-first+1 for first,last in ranges)>80:
+                raise ValueError(f"模型证据 {observation['evidence_id']} 行号越界或引用超过 80 行：{locator}；源文件共 {count} 行")
+            excerpts = []
+            for first,last in ranges:
+                if file_backed:
+                    with Path(source['line_source_path']).open(errors='replace') as stream:
+                        excerpt = ''.join(itertools.islice(stream,first-1,last)).rstrip('\r\n')
+                else:
+                    excerpt = ''.join(lines[first-1:last]).rstrip('\r\n')
+                if not excerpt.strip(): raise ValueError('证据引用为空')
+                excerpts.append(excerpt if len(ranges)==1 else f'[@lines:{first}-{last}]\n{excerpt}')
+            observation['quote'] = '\n\n'.join(excerpts)
+            continue
         if source and source.get('content_storage')=='file':raise ValueError('文件证据必须使用原文件 @lines 行号')
         if not source or not observation['quote'].strip() or observation['quote'] not in source['output']:
             raise ValueError(f"模型事实引用未匹配原始工具输出：{observation['evidence_id']} · {observation['quote'][:240]!r}")
@@ -277,7 +281,7 @@ S1 如存在是用户配置的静态分析软件的实际输出，report 保留�
 entitlements.status=absent 表示查询成功并确认无 entitlement，是确定结论，不是待补查项；不是每个 binary 都需要 entitlement。查询失败或无法解码才保留未知。
 默认研究顺序不可跳过：先读取 runtime_investigation 和 R 编号证据，给出运行时 UID/EUID、entitlements、sandbox 及其采样范围的事实结论；再梳理 IPC 注册端点、接收入口、消息解析与调用方鉴权；最后分析功能实现。基础事实不交给专家判断。若有 C 编号的 IDA 反编译、汇编和 CFG，必须继续自动还原 IPC 鉴权：具体 entitlement 字符串、类型/值判断、每个允许与拒绝分支、拒绝时返回值及是否到达消息解析。不要再问专家该查哪个 entitlement 或哪些调用方可进入。按调用方类别给出静态放行规则，并注明 Mach 端点可达性前提；没有运行请求对照就不能称为端到端动态验证。C99 如存在仅校准 API 语义，不是目标处理请求的实验。C98 如存在是最小目标请求对照；空回复不能区分鉴权拒绝与解析失败，服务日志没有客户端 PID 时只提供时间相关证据，不要夸大为完整调用方矩阵验证。调用图不得补全未解析间接调用、ObjC receiver 或跨库函数体，UNVERIFIED 不能当成漏洞。已采集到的基础结论不要列为待专家确认；采集失败明确写技术原因和下一步查证方法。静态 entitlement、profile 或 API 符号不能替代运行时状态，不同启动方式的身份不能互相代表。iOS 没有设备证据就不能用 macOS 结果代替。
 规划角色提出具体且有序的研究步骤；分析角色结合规划结果，对实际符号、依赖、字符串、反汇编片段作分析。
-observations 每条只陈述一个引用片段直接支持的事实，禁止一句罗列多个事实而 quote 只支持其中之一。架构必须依据工具的 architecture 字段和命令参数；不能把 file 列出的架构列表当成每条反汇编的架构。ARM64 的 bl、cbz、x0/w0 指令或寄存器不能标注为 x86_64。observations 只写有直接证据的客观观察，每条 evidence_id 必须为提供的 T、R、C、D、S、P、V 或本次新增工具证据编号，quote 必须写成 "@lines:起始行-结束行"（例如 "@lines:12-15"）。内嵌证据行号读取 evidence-lines.json 对应 id 的 lines 前缀；content_storage=file 的证据行号取 line_source_path 原始文件。均从 1 开始，最多 80 行；程序将按行号提取原始证据，不要手写汇编或拼接不连续片段。每条观察只引用直接支持该事实的行；不同分支可分成多条观察。
+observations 每条只陈述一个引用片段直接支持的事实，禁止一句罗列多个事实而 quote 只支持其中之一。架构必须依据工具的 architecture 字段和命令参数；不能把 file 列出的架构列表当成每条反汇编的架构。ARM64 的 bl、cbz、x0/w0 指令或寄存器不能标注为 x86_64。observations 只写有直接证据的客观观察，每条 evidence_id 必须为提供的 T、R、C、D、S、P、V 或本次新增工具证据编号，quote 必须写成 "@lines:起始行-结束行"（例如 "@lines:12-15"）。内嵌证据行号读取 evidence-lines.json 对应 id 的 lines 前缀；content_storage=file 的证据行号取 line_source_path 原始文件。均从 1 开始，最多 80 行；程序将按行号提取原始证据，不要手写汇编；不连续证据可以使用多行 @lines:a-b，每行一个范围，总计不超过80行，程序会明确标记各段行号。每条观察只引用直接支持该事实的行；不同分支可分成多条观察。
 inferences 是与观察分离的解释或假设，引用证据并写清 limitation。不能从符号出现推断一定可达，也不能把字符串提示当成已执行行为。
 unknowns 写未能确认的问题，expert_questions 把研究价值、优先级和风险判断留给人类专家。
 真实模式实验阶段使用 V 编号的实际探测记录，失败也是实测结果，不得编造成功。没有 V 记录或本次实际命令输出时不得声称已执行实验。运行时调查属于真实环境采样，可以陈述采样确认的事实，但不能声称做了漏洞动态验证或确认漏洞。
@@ -299,8 +303,9 @@ P 编号是本机 application.sb 及其 imports 实际内容，必须检查 home
                '-m', MODEL, '-s', 'danger-full-access', '-c', 'approval_policy="never"',
                '-c', 'model_reasoning_effort="medium"', '-C', str(workspace), '--json',
                '--output-schema', str(workspace / 'schema.json'), '-o', str(workspace / 'result.json'), '-']
-    progress('真实模型调用', f'{role} · {MODEL} · 完整本机工具权限；最长 300 秒')
-    code, duration = execute(command, workspace, out, err, check, 300, prompt_path)
+    model_timeout = max(60, int(os.environ.get('SSJ_MODEL_TIMEOUT', '900')))
+    progress('真实模型调用', f'{role} · {MODEL} · 完整本机工具权限；最长 {model_timeout} 秒')
+    code, duration = execute(command, workspace, out, err, check, model_timeout, prompt_path)
     if code: raise RuntimeError(f'Codex 退出码 {code}；诊断文件：{err}')
     live_evidence = capture_live_evidence(out, live_prefix, workspace)
     manifest['evidence'].extend(live_evidence)

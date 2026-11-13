@@ -172,10 +172,10 @@ class HybridTests(unittest.TestCase):
         self.assertTrue(all(a['source'] == 'tool' for a in r['artifacts']))
         r = self.engine.action(r['id'], {'action': 'resume'})
         self.assertEqual(r['status'], 'running')
-        self.assertEqual(r['stage'], 0)
-        self.assertEqual(r['revision'], 2)
-        self.assertNotIn('runtime_investigation', r)
-        self.assertEqual(r['history'][-1]['status'], 'failed')
+        self.assertEqual(r['stage'], 1)
+        self.assertEqual(r['revision'], 1)
+        self.assertIn('manifest_path', r)
+        self.assertNotIn('error', r)
 
     def test_simulation_knowledge_is_excluded_from_real_planner(self):
         demo = self.engine.create({'target': str(self.target)})
@@ -265,6 +265,17 @@ class HybridTests(unittest.TestCase):
             answer=result();answer['observations'][0]['quote']=locator
             with self.assertRaises(ValueError):hybrid_agent.validate_result(answer,evidence)
 
+    def test_disjoint_citations_keep_explicit_boundaries(self):
+        evidence=[{'id':'T0','output':'first\nnot cited\nthird\n'}]
+        answer=result();answer['observations'][0]['quote']='@lines:1-1\n@lines:3-3'
+        hybrid_agent.validate_result(answer,evidence)
+        self.assertEqual(answer['observations'][0]['quote'],'[@lines:1-1]\nfirst\n\n[@lines:3-3]\nthird')
+        answer=result();answer['observations'][0]['quote']='@lines:1-1,3-3'
+        hybrid_agent.validate_result(answer,evidence)
+        self.assertIn('[@lines:3-3]\nthird',answer['observations'][0]['quote'])
+        answer=result();answer['observations'][0]['quote']='@lines:1-1\n@lines:4-4'
+        with self.assertRaises(ValueError):hybrid_agent.validate_result(answer,evidence)
+
     def test_static_output_limit_retains_partial_evidence_and_continues(self):
         def execute(argv,cwd,stdout,stderr,*args,**kwargs):
             stdout.write_text('captured ARM disassembly');stderr.write_text('')
@@ -291,6 +302,11 @@ class HybridTests(unittest.TestCase):
         answer=result();answer['observations']=[dict(statement='tail exists',evidence_id='T7',quote='@lines:102-102')]
         hybrid_agent.validate_result(answer,m['evidence'])
         self.assertEqual(answer['observations'][0]['quote'],'tail sentinel')
+        answer=result();answer['observations']=[dict(statement='head and tail',evidence_id='T7',quote='@lines:1-1\n@lines:102-102')]
+        hybrid_agent.validate_result(answer,m['evidence'])
+        self.assertIn('[@lines:102-102]\ntail sentinel',answer['observations'][0]['quote'])
+        answer=result();answer['observations']=[dict(statement='too much',evidence_id='T7',quote='@lines:1-41\n@lines:42-82')]
+        with self.assertRaises(ValueError):hybrid_agent.validate_result(answer,m['evidence'])
 
     def test_file_capture_can_exceed_default_limit_without_losing_bytes(self):
         with patch('hybrid_agent.MAX_EXEC_OUTPUT',1024):

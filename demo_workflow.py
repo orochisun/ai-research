@@ -335,7 +335,10 @@ class Engine:
                 self._event(run, 'expert', '暂停研究', '保留当前节点，等待恢复。')
             elif action == 'resume':
                 if run['status'] not in ('paused', 'failed', 'research_blocked'): raise ValueError('只有暂停或失败的研究可以恢复')
-                if run['status'] in ('failed','research_blocked') and 'stages' in run:
+                if run['status'] == 'failed':
+                    run.pop('error', None)
+                    self._event(run, 'investigator', '失败阶段重试', '保留本轮计划与原始证据，从失败节点重新执行。', source='system')
+                if run['status'] == 'research_blocked' and 'stages' in run:
                     run['history'].append({k: copy.deepcopy(run[k]) for k in ('revision', 'focus', 'stage', 'status', 'plan', 'knowledge_refs')})
                     run['revision'] += 1
                     row = c.execute('SELECT body FROM tool_settings WHERE name=?', ('static',)).fetchone()

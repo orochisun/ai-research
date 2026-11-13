@@ -151,3 +151,5 @@ XPCKeychainSandboxCheck 探测会保存完整请求与回复，包括原始 sand
 该目标的默认实验会构建 ARM App Sandbox 客户端（仅 `com.apple.security.app-sandbox=true`，ad-hoc 签名并嵌入 bundle identifier）。标准输入只传基线路径，不传令牌；同一个进程记录请求前基线，直接通过 `xpc_connection_create` 请求 `GrantKeychainPaths`，保存完整回复，再记录消费前、消费后和释放后的 `sandbox_check(file-read-data/file-write-data)` 与 `open(O_RDONLY)` 结果。只打开并关闭，不读取或写入 Keychain 内容；`ENOENT` 与权限拒绝分开报告。仅在 Sandbox 已启用、直接取得回复、全部令牌消费成功且请求前基线覆盖复测路径时标记 `end_to_end=true`。普通会话请求保留作对照及路径发现，不能代替 Sandbox 客户端自己的请求结果。
 
 大型静态输出（例如 passd 的全量反汇编）直接完整写入 stdout/stderr 文件，不受模型事件日志的 24 MiB 限制。较大的证据在清单中只保存文件索引，标记 `content_storage=file`，附原始文件路径、字节数和行数；Agent 使用 `rg -n` 定位、`sed -n` 分段读取。该证据的 `@lines` 引用直接按原文件行号校验，文件尾部也可引用。命令超时或失败会明确标记不完整，不冒充全量成功。
+
+多 Agent 模型阶段默认允许执行 900 秒，可通过启动服务时设置 `SSJ_MODEL_TIMEOUT`（秒，最小 60）调整。工具或模型执行失败后，“恢复”重试失败节点，保留本轮计划和原始证据；评审明确阻塞后的恢复仍会启动新轮调查。单条观察可引用多个换行分隔的 `@lines:a-b` 范围，总计最多 80 行；系统逐段核验并显示原始行号，不把分离片段伪装成连续输出。
