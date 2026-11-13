@@ -255,6 +255,9 @@ class HybridTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '自动纠错后仍未通过'):
                 hybrid_agent.run_role('planner', {}, manifest(), self.root/'role', lambda:None, lambda *a:None)
         self.assertEqual(execute.call_count, 2)
+        repair=(self.root/'role/retry-2/prompt.txt').read_text()
+        self.assertIn('不是重新开展研究',repair)
+        self.assertIn('rejected_result',repair)
 
     def test_citation_line_locator_materializes_exact_original(self):
         answer=result();answer['observations'][0]['quote']='@lines:2-3'
