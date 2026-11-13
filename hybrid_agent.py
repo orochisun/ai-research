@@ -31,6 +31,35 @@ TASK_SCHEMA = obj({'task_index':{'type':'integer'}, 'status':{'type':'string','e
                    'conclusion':STR, 'evidence_ids':STRINGS, 'attempt':STR, 'blocker':STR})
 RESEARCH_SCHEMA = obj({**SCHEMA['properties'], 'task_results':{'type':'array','items':TASK_SCHEMA}})
 
+KNOWLEDGE_SCHEMA = obj({'id': STR, 'version': {'type':'integer'},
+    'status': {'type':'string','enum':['verified','not_applicable','blocked']},
+    'reason': STR, 'attempt': STR, 'conclusion': STR, 'evidence_ids': STRINGS, 'blocker': STR})
+
+def validate_knowledge(result, knowledge, evidence):
+    checks = result.get('knowledge_checks')
+    if not isinstance(checks, list): raise ValueError('必须逐条交付专家经验验证记录')
+    expected = {(k['id'], k['version']) for k in knowledge}
+    seen = set(); ids = {e['id'] for e in evidence}
+    for k in checks:
+        if not isinstance(k, dict) or set(k) != set(KNOWLEDGE_SCHEMA['properties']):
+            raise ValueError('专家经验验证记录格式错误')
+        if not isinstance(k['id'], str) or type(k['version']) is not int: raise ValueError('知识版本格式错误')
+        key = (k['id'], k['version'])
+        if key not in expected or key in seen: raise ValueError('知识版本不符或重复')
+        seen.add(key)
+        if k['status'] not in ('verified','not_applicable','blocked'): raise ValueError('知识验证状态错误')
+        if any(not isinstance(k[f],str) for f in ('reason','attempt','conclusion','blocker')) or not k['reason'].strip() or not k['conclusion'].strip():
+            raise ValueError('必须解释经验适用性与结论')
+        if not isinstance(k['evidence_ids'],list) or any(not isinstance(i,str) or i not in ids for i in k['evidence_ids']):
+            raise ValueError('知识验证引用未知证据')
+        if k['status']=='verified' and (not k['attempt'].strip() or not k['evidence_ids'] or k['blocker'].strip()):
+            raise ValueError('已验证经验必须给出实际核查动作和证据，不能含阻塞')
+        if k['status']=='blocked' and (not k['blocker'].strip() or not k['attempt'].strip()):
+            raise ValueError('经验未验证必须说明尝试及技术阻塞')
+    if seen != expected: raise ValueError('专家经验验证不得遗漏')
+    return checks
+
+
 def validate_tasks(result, plan, evidence):
     tasks=result.get('task_results',[]);ids={e['id'] for e in evidence}
     if sorted(t.get('task_index',-1) for t in tasks)!=list(range(1,len(plan)+1)):
@@ -187,7 +216,10 @@ def run_role(role, context, manifest, workspace, check, progress, _attempt=1):
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / 'evidence.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     require_tasks = role in ('analyst','experimenter','reviewer') and bool(context.get('plan'))
-    (workspace / 'schema.json').write_text(json.dumps(RESEARCH_SCHEMA if require_tasks else SCHEMA))
+    knowledge = context.get('confirmed_knowledge', [])
+    properties = dict((RESEARCH_SCHEMA if require_tasks else SCHEMA)['properties'])
+    if knowledge: properties['knowledge_checks'] = {'type':'array','items':KNOWLEDGE_SCHEMA}
+    (workspace / 'schema.json').write_text(json.dumps(obj(properties)))
     (workspace / 'evidence-lines.json').write_text(json.dumps([{
         'id': e['id'], 'title': e['title'], 'lines': [f'{i}: {line}' for i,line in enumerate(e['output'].splitlines(),1)]
         } for e in manifest['evidence']], ensure_ascii=False, indent=2))
@@ -208,6 +240,8 @@ unknowns 写未能确认的问题，expert_questions 把研究价值、优先级
 ''' + json.dumps(context, ensure_ascii=False)
     if require_tasks:
         prompt += '\n交付约束：你不是重新规划。逐项执行研究上下文 plan，task_results 必须对应每项原计划（task_index 从1开始）。每项给出已完成的具体结论、实际读过的函数/证据或已运行的探测、证据编号。静态结论用 confirmed_static；真实请求观测用 observed_runtime；确实受技术条件限制才用 blocked，并说明已尝试什么、具体错误及下一步。不要把“继续确认”“是否需要补充反编译”当作已完成。已提供 C 函数时必须读完与目标有关的函数，追到字段来源、分支与返回，不能只摘字符串。运行时缺口不能阻止独立静态问题的解决。expert_questions 仅限价值、威胁模型或优先级，禁止询问是否继续可自动完成的基础调查。实验角色必须解释 V 记录对每项计划验证了什么、没有验证什么。评审角色独立核验此前交付与证据，逐项重新判定 task_results；未完成的客观问题必须 blocked，不得因为其他角色自称完成而通过。结合静态与运行时证据分开判断，不把静态结论当动态验证。字段映射必须以回复构造函数的实参位置为准，逐一绑定输出字段与实参变量及其生成函数，不可把相邻字段的生成逻辑串错。特别核对实际回复的字段类型与静态解释是否一致；若前一角色把路径字典和令牌数组混淆，明确纠正，不要沿用其摘要。已确认的具体服务名要从探测源码、bundle元数据与实际请求成功联合核对，不要把 launchd 标准目录没有条目误作无法确定服务名。'
+    if knowledge:
+        prompt += '\nconfirmed_knowledge 是专家确认的方法指导，所有角色（包括规划和评审）必须逐条读取最新版 summary，original 仅作溯源。经验不是目标事实，不能替代证据。对每条提交 knowledge_checks，精确引用 id/version。reason 解释目标和条件是否适用；attempt 写实际读取的函数、分支或探测记录；conclusion 写结果。适用且已按方法验证才用 verified 并引用证据；不适用用 not_applicable 并给具体理由；缺少工具或证据用 blocked，记录尝试、具体限制和下一步方法，不得伪称执行。规划必须把尚未验证的方法纳入具体计划；分析、实验和评审必须各自核查，不能复制前一角色的完成声明。评审对未验证方法打回。方法要求超出当前只读证据能力时明确 blocked，不得突破工具执行限制。'
     prompt_path = workspace / 'prompt.txt'
     prompt_path.write_text(prompt)
     out, err = workspace / 'events.jsonl', workspace / 'stderr.log'
@@ -221,7 +255,9 @@ unknowns 写未能确认的问题，expert_questions 把研究价值、优先级
     try:
         raw_result=json.loads((workspace / 'result.json').read_text())
         tasks=validate_tasks(raw_result,context['plan'],manifest['evidence']) if require_tasks else None
-        parsed=validate_result({k:v for k,v in raw_result.items() if k!='task_results'},manifest['evidence'])
+        checks=validate_knowledge(raw_result,knowledge,manifest['evidence']) if knowledge else None
+        parsed=validate_result({k:v for k,v in raw_result.items() if k not in ('task_results','knowledge_checks')},manifest['evidence'])
+        if checks is not None: parsed['knowledge_checks']=checks
         if tasks is not None: parsed['task_results']=tasks
     except ValueError as exc:
         if _attempt >= 2:

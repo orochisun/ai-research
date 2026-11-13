@@ -324,6 +324,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/demo/runs': return self.send(201, demo.create(body))
             m = re.fullmatch(r'/api/demo/runs/([a-f0-9]{12})/action', self.path)
             if m: return self.send(200, demo.action(m[1], body))
+            if self.path == '/api/demo/knowledge': return self.send(200, demo.create_knowledge(body))
             m = re.fullmatch(r'/api/demo/knowledge/([a-f0-9]{12})', self.path)
             if m: return self.send(200, demo.edit_knowledge(m[1], body))
             if self.path == '/api/tasks': return self.send(201, create_task(body))

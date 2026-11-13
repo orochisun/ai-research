@@ -136,11 +136,7 @@ class Engine:
             return
         token = uuid.uuid4().hex
         role = {'investigate': 'investigator', 'plan': 'planner', 'analyze': 'analyst', 'experiment':'experimenter', 'review':'reviewer', 'supplement':'analyst', 'recheck':'reviewer'}[run.get('stages', STAGES)[run['stage']]]
-        if role == 'planner':
-            entries = [json.loads(row[0]) for row in c.execute('SELECT body FROM expert_knowledge')]
-            run['knowledge_refs'] = [{'id': k['id'], 'version': k['version'], 'summary': k['summary']}
-                                     for k in entries if k['status'] == 'confirmed' and k.get('source') == 'hybrid'
-                                     and (k['scope'] == 'global' or k['run_id'] == run['id'])]
+        run['knowledge_refs'] = self._confirmed_knowledge(c, run['id'])
         run['active_job'] = token
         run['roles'][role] = 'running'
         run.pop('error', None)
@@ -221,7 +217,7 @@ class Engine:
                     for e in manifest['evidence']:
                         if e['id'].startswith('V'):
                             self._artifact(run,'verification',e['title'],e['output'],source='tool')
-                run.setdefault('model_results', []).append(dict(outcome, revision=revision))
+                run.setdefault('model_results', []).append(dict(outcome, revision=revision, knowledge_refs=snapshot['knowledge_refs']))
                 for tool_event in outcome.get('tool_events', []):
                     self._event(run, role, '模型实际工具调用', str(tool_event.get('command', ''))[:1500] + '\n退出码：' + str(tool_event.get('exit_code')), source='tool')
                 self._artifact(run, 'model_analysis', {'planner':'真实规划','analyst':'真实静态分析','experimenter':'真实实验核验','reviewer':'真实证据评审'}[role] + ' · ' + hybrid_agent.MODEL,
@@ -230,12 +226,13 @@ class Engine:
                 if role=='reviewer':
                     tasks=outcome['result'].get('task_results',[])
                     gaps=[t for t in tasks if t['status']=='blocked' or t['blocker'].strip()]
-                    ready=bool(tasks) and not gaps and not outcome['result']['unknowns']
+                    knowledge_gaps=[k for k in outcome['result'].get('knowledge_checks',[]) if k['status']=='blocked']
+                    ready=bool(tasks) and not gaps and not knowledge_gaps and not outcome['result']['unknowns']
                     final=stage_name=='recheck'
                     status='ready_for_expert' if ready else 'research_blocked' if final else 'needs_analysis'
                     run['reviews'].append({'revision':revision,'status':status,'target':'expert' if ready else 'analyst',
                         'reason':outcome['result']['summary'],'acceptance':'逐项解决计划缺口；真实证据不足不得通过',
-                        'refs':sorted({eid for t in tasks for eid in t['evidence_ids']}),'source':'model','gaps':gaps})
+                        'refs':sorted({eid for t in tasks for eid in t['evidence_ids']}),'source':'model','gaps':gaps,'knowledge_gaps':knowledge_gaps})
                     if ready:
                         run['status']='waiting_expert';run['stage']=len(run.get('stages',STAGES))-1
                     elif final:run['status']='research_blocked'
@@ -352,6 +349,22 @@ class Engine:
             self._save(c, run)
             return run
 
+    def _confirmed_knowledge(self, c, rid):
+        entries = [json.loads(row[0]) for row in c.execute('SELECT body FROM expert_knowledge')]
+        return [{key: k[key] for key in ('id', 'version', 'summary', 'original', 'scope')}
+                for k in entries if k['status'] == 'confirmed' and k.get('source') == 'hybrid'
+                and (k['scope'] == 'global' or k.get('run_id') == rid)]
+
+    def create_knowledge(self, body):
+        original = text_field(body, 'original')
+        k = dict(id=uuid.uuid4().hex[:12], run_id=None, message_id=None, target='',
+                 original=original, summary=original, kind='全局专家经验', scope='global',
+                 status='confirmed', version=1, history=[], created=time.time(), source='hybrid',
+                 evidence_status='方法待各 Agent 按目标验证')
+        with self.lock, self.db() as c:
+            c.execute('INSERT INTO expert_knowledge VALUES (?,?)', (k['id'], json.dumps(k, ensure_ascii=False)))
+        return k
+
     def edit_knowledge(self, kid, body):
         summary = text_field(body, 'summary')
         status, scope = body.get('status'), body.get('scope')
@@ -361,6 +374,7 @@ class Engine:
             row = c.execute('SELECT body FROM expert_knowledge WHERE id=?', (kid,)).fetchone()
             if not row: raise ValueError('知识不存在')
             k = json.loads(row[0])
+            if not k.get('run_id') and scope != 'global': raise ValueError('独立专家经验只能使用全局范围')
             if body.get('version') != k['version']: raise ValueError('知识已被更新，请刷新后重试')
             k['history'].append({key: k[key] for key in ('version', 'summary', 'status', 'scope')})
             k.update(summary=summary, status=status, scope=scope, version=k['version'] + 1)

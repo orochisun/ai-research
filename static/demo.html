@@ -45,5 +45,5 @@
       </div>
     </div>
   </section>
-  <section id="knowledgeView" hidden><div class="panel"><h2>把你的经验留给下一轮研究</h2><p class="muted">自动保存原话。你可以编辑提炼、确认适用范围；确认表达准确不等于实验验证。仅确认后的真实研究知识用于新任务。</p><label>搜索知识<input id="knowledgeSearch" type="search" placeholder="搜索原话、提炼或目标路径"></label></div><div id="knowledgeList"></div></section>
+  <section id="knowledgeView" hidden><div class="panel"><h2>把你的经验留给下一轮研究</h2><p class="muted">自动保存原话。你可以编辑提炼、确认适用范围；确认表达准确不等于实验验证。全局经验在每个 Agent 启动时读取；正在执行的调用从下一阶段生效。</p><form id="globalKnowledgeForm"><h3>新增全局专家经验</h3><label>适用条件、验证方法与判定依据<textarea id="globalKnowledgeText" required maxlength="2000" rows="5" placeholder="适用目标/系统版本：&#10;验证步骤与工具：&#10;什么证据支持结论：&#10;例外与限制："></textarea></label><button type="submit">保存并全局启用</button><p class="muted">保存即确认方法指导，所有模型 Agent 逐条提交验证记录；经验本身不作为目标事实。</p></form><label>搜索知识<input id="knowledgeSearch" type="search" placeholder="搜索原话、提炼或目标路径"></label></div><div id="knowledgeList"></div></section>
 </main><script src="/demo.js"></script></body></html>
