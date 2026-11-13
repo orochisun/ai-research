@@ -6,6 +6,7 @@ import hybrid_agent
 import runtime_probe
 import call_graph
 import static_analyzer
+import verification
 from pathlib import Path
 import time
 import uuid
@@ -35,6 +36,8 @@ class Engine:
             c.execute('CREATE TABLE IF NOT EXISTS expert_knowledge (id TEXT PRIMARY KEY, body TEXT NOT NULL)')
             for row in c.execute('SELECT body FROM demo_runs').fetchall():
                 run = json.loads(row[0])
+                if run.get('mode')!='hybrid' and run['status']=='running':
+                    run['status']='paused';self._save(c,run)
                 if run.get('active_job'):
                     run['active_job'] = None
                     run['status'] = 'paused'
@@ -54,9 +57,9 @@ class Engine:
     def _event(self, run, role, title, detail, refs=None, source=None):
         run['events'].append({'id': 'EV' + str(len(run['events']) + 1), 'time': time.time(),
                               'revision': run['revision'], 'role': role, 'title': title,
-                              'detail': detail, 'refs': refs or [], 'source': source or ('expert' if role == 'expert' else 'simulation')})
+                              'detail': detail, 'refs': refs or [], 'source': source or ('expert' if role == 'expert' else 'system')})
 
-    def _artifact(self, run, kind, title, content, source="simulation"):
+    def _artifact(self, run, kind, title, content, source="tool"):
         artifact = {'id': 'E' + str(len(run['artifacts']) + 1), 'revision': run['revision'],
                     'kind': kind, 'title': title, 'content': content, 'source': source,
                     'focus': run['focus'], 'target': run['target']}
@@ -65,8 +68,8 @@ class Engine:
 
     def create(self, body):
         target = text_field(body, 'target', 4096).rstrip('/')
-        mode = body.get('mode', 'simulation')
-        if mode not in ('simulation', 'hybrid'): raise ValueError('不支持的研究模式')
+        mode = body.get('mode', 'hybrid')
+        if mode != 'hybrid': raise ValueError('仅支持真实 Luna 研究，模拟模式已移除')
         if mode == 'hybrid':
             binary = hybrid_agent.binary_path(target)
             with binary.open('rb') as stream:
@@ -80,12 +83,12 @@ class Engine:
                'scenario': 'xpc' if is_xpc else 'input-boundary', 'revision': 1, 'stage': 0, 'status': 'running', 'next_at': now + 2,
                'roles': {r: 'pending' for r in ROLES}, 'events': [], 'artifacts': [],
                'reviews': [], 'messages': [], 'history': [], 'plan': [], 'knowledge_refs': [],
-               'source': 'hybrid' if mode == 'hybrid' else 'simulation', 'mode': mode,
+               'source': 'hybrid', 'mode': mode,
                'model': hybrid_agent.MODEL if mode == 'hybrid' else None, 'active_job': None, 'model_results': [], 'decision': None}
         if mode == 'hybrid':
             run['stages'] = ['investigate', *STAGES]
             run['roles'] = {'investigator': 'pending', **run['roles']}
-        self._event(run, 'planner', '研究已创建', '默认先自动调查运行身份、权限、sandbox 与 IPC，再由 gpt-6-luna 规划分析；漏洞实验仍模拟。' if mode == 'hybrid' else '输入仅作为目标标识；不会读取内容、运行或分析该目标。', source='system')
+        self._event(run, 'planner', '研究已创建', '默认先自动调查运行身份、权限、sandbox 与 IPC，再由 gpt-6-luna 规划分析；所有环节使用真实证据；不支持的实验明确记录阻塞。' if mode == 'hybrid' else '输入仅作为目标标识；不会读取内容、运行或分析该目标。', source='system')
         run['static_tool_config'] = self.tool_config()
         with self.lock, self.db() as c:
             self._save(c, run)
@@ -115,52 +118,10 @@ class Engine:
 
     def _advance(self, c, run):
         stage = run.get('stages', STAGES)[run['stage']]
-        if run.get('mode') == 'hybrid' and stage in ('investigate', 'plan', 'analyze'):
+        if run.get('mode') == 'hybrid' and stage in ('investigate', 'plan', 'analyze', 'experiment', 'review', 'supplement', 'recheck'):
             self._start_model(c, run)
             return
-        focus = run['focus']
-        binary = run.get('scenario', 'xpc') == 'input-boundary'
-        if stage == 'plan':
-            candidates = [json.loads(r[0]) for r in c.execute('SELECT body FROM expert_knowledge')]
-            refs = [k for k in candidates if k['status'] == 'confirmed' and k.get('source', 'simulation') == run['source'] and (k['scope'] == 'global' or k['run_id'] == run['id'])]
-            run['knowledge_refs'] = [{'id': k['id'], 'version': k['version'], 'summary': k['summary']} for k in refs]
-            run['plan'] = [f'分析：围绕「{focus}」列出入口与未知项', '实验：固定环境，记录正常、空和截断输入的返回值' if binary else '实验：记录身份、配置和返回值', '评审：检查证据引用与对照完整性', '专家：判断方向、价值与阶段结论']
-            run['roles']['planner'] = 'done'
-            run['roles']['analyst'] = 'running'
-            self._event(run, 'planner', '计划已拆解', '\n'.join(run['plan']) + f'\n引用 {len(refs)} 条已确认的演示知识。', [k['id'] for k in refs])
-        elif stage == 'analyze':
-            eid = self._artifact(run, 'observation', '模拟分析记录 · 入口与未知项', (f'研究方向：{focus}\n预设模型包含输入接收 → 格式检查 → 结果返回。待验证：空输入和截断输入的处理。\n此记录来自通用输入边界演示夹具，未确认目标的实际调用结构。' if binary else f'研究方向：{focus}\n预设模型包含 client → broker → service 三段调用。转发后的身份来源尚未验证。\n此记录来自演示夹具，不是对目标二进制的发现。'))
-            run['roles']['analyst'] = 'done'
-            run['roles']['experimenter'] = 'running'
-            self._event(run, 'analyst', '分析材料交给实验 Agent', '已列出输入边界处理这一未知项，准备对照验证。' if binary else '已列出身份来源这一未知项，准备对照验证。', [eid])
-        elif stage == 'experiment':
-            eid = self._artifact(run, 'experiment', '模拟实验 01 · 基线', (f'研究方向：{focus}\nfixture=input-boundary-v1; config=A; input=normal; result=accepted\n缺口：尚未覆盖空输入和截断输入。没有实际执行命令。' if binary else f'研究方向：{focus}\nfixture=xpc-demo-v1; config=A; caller=administrator; response=accepted\n缺口：尚未覆盖普通用户。没有实际执行命令。'))
-            run['roles']['experimenter'] = 'done'
-            run['roles']['reviewer'] = 'running'
-            self._event(run, 'experimenter', '提交首次实验记录', '预设基线已返回；结果待评审。', [eid])
-        elif stage == 'review':
-            refs = [a['id'] for a in run['artifacts'] if a['revision'] == run['revision']]
-            review = {'revision': run['revision'], 'status': 'needs_experiment', 'target': 'experimenter',
-                      'reason': '当前只有正常输入，缺少空输入和截断输入，不能判断边界处理。' if binary else '当前只有管理员身份，无法比较低权限调用者的行为。',
-                      'acceptance': '固定 config=A，补充空输入和截断输入，记录输入条件、返回值及异常。' if binary else '固定 config=A，增加普通用户对照，保留身份与返回值。', 'refs': refs}
-            run['reviews'].append(review)
-            run['roles']['reviewer'] = 'returned'
-            run['roles']['experimenter'] = 'running'
-            self._event(run, 'reviewer', '评审打回 → 补充实验', review['reason'] + '\n补齐标准：' + review['acceptance'], refs)
-        elif stage == 'supplement':
-            eid = self._artifact(run, 'experiment', '模拟实验 02 · 补充对照', (f'研究方向：{focus}\nfixture=input-boundary-v1; config=A\ninput=normal; result=accepted\ninput=empty; result=rejected\ninput=truncated; result=rejected\n以上均为预设数据，未执行目标，也没有验证其真实行为。' if binary else f'研究方向：{focus}\nfixture=xpc-demo-v1; config=A\ncaller=administrator; response=accepted\ncaller=standard-user; response=denied\n仅为预设对照数据，不代表目标的真实权限行为。'))
-            run['roles']['experimenter'] = 'done'
-            run['roles']['reviewer'] = 'running'
-            self._event(run, 'experimenter', '已补齐评审要求', '使用相同配置补充空输入与截断输入，重新提交评审。' if binary else '使用相同配置补充普通用户对照，重新提交评审。', [eid])
-        else:
-            refs = [a['id'] for a in run['artifacts'] if a['revision'] == run['revision']]
-            run['reviews'].append({'revision': run['revision'], 'status': 'ready_for_expert', 'target': 'expert',
-                                   'reason': '模拟对照记录已完整；研究价值和安全结论等待专家判断。', 'acceptance': '请专家选择继续研究或收束，并留下判断。', 'refs': refs})
-            run['roles']['reviewer'] = 'done'
-            run['status'] = 'waiting_expert'
-            self._event(run, 'reviewer', '提交专家判断', '可陈述：预设正常输入被接受，空输入和截断输入被拒绝。未知：实际目标的调用入口、输入格式和处理行为。请专家判断下一步。' if binary else '可陈述：两种身份在预设数据中返回不同结果。未知：实际目标行为。请专家判断下一步。', refs)
-        run['stage'] += 1
-        run['next_at'] = time.time() + 3
+        raise ValueError('旧模拟任务不能继续执行，请创建真实研究任务')
 
     def tick(self):
         with self.lock, self.db() as c:
@@ -174,7 +135,7 @@ class Engine:
         if run.get('active_job') or len(self._threads) >= 2 or self._closing.is_set():
             return
         token = uuid.uuid4().hex
-        role = {'investigate': 'investigator', 'plan': 'planner', 'analyze': 'analyst'}[run.get('stages', STAGES)[run['stage']]]
+        role = {'investigate': 'investigator', 'plan': 'planner', 'analyze': 'analyst', 'experiment':'experimenter', 'review':'reviewer', 'supplement':'analyst', 'recheck':'reviewer'}[run.get('stages', STAGES)[run['stage']]]
         if role == 'planner':
             entries = [json.loads(row[0]) for row in c.execute('SELECT body FROM expert_knowledge')]
             run['knowledge_refs'] = [{'id': k['id'], 'version': k['version'], 'summary': k['summary']}
@@ -208,6 +169,7 @@ class Engine:
         workspace = self.data_root() / 'hybrid' / rid / f'r{revision}' / token
         try:
             check()
+            workspace.mkdir(parents=True,exist_ok=True)
             if role == 'investigator' or (role == 'planner' and 'stages' not in snapshot):
                 manifest = hybrid_agent.collect(snapshot['target'], workspace / 'inputs', check, progress)
                 manifest_path = workspace / 'inputs/evidence.json'
@@ -238,9 +200,14 @@ class Engine:
                                 f"匹配 {len(investigation['launch_definitions'])} 项启动配置；采样 {len(investigation['processes'])} 个进程。基础事实与缺口自动交给规划 Agent。", source='tool')
                     self._save(c, run)
                 return
+            stage_name=snapshot.get('stages', STAGES)[stage]
+            if role=='experimenter' or stage_name=='supplement':
+                verification.collect(manifest,workspace/'verification',check,progress,hybrid_agent.execute)
+                manifest_path=workspace/'evidence.json'
+                manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
             context = {'goal': snapshot['focus'], 'target': snapshot['target'], 'revision': revision,
                        'expert_messages': snapshot['messages'], 'confirmed_knowledge': snapshot['knowledge_refs'],
-                       'plan': snapshot['plan'], 'metadata': manifest['metadata'], 'runtime_investigation': manifest.get('runtime_investigation'), 'call_graph': manifest.get('call_graph'), 'static_analysis': {k: v for k, v in manifest.get('static_analysis', {}).items() if k != 'report'}}
+                       'plan': snapshot['plan'], 'previous_results':[{'role':x['role'],'result':x['result']} for x in snapshot.get('model_results',[]) if x['revision']==revision], 'review_feedback':snapshot.get('reviews',[])[-1:], 'metadata': manifest['metadata'], 'runtime_investigation': manifest.get('runtime_investigation'), 'call_graph': manifest.get('call_graph'), 'static_analysis': {k: v for k, v in manifest.get('static_analysis', {}).items() if k != 'report'}}
             outcome = hybrid_agent.run_role(role, context, manifest, workspace / role, check, progress)
             with self.lock, self.db() as c:
                 run = self._load(c, rid)
@@ -249,13 +216,34 @@ class Engine:
                     run['manifest_path'] = str(manifest_path)
                     if 'stages' not in run: self._publish_evidence(run, manifest)
                     run['plan'] = outcome['result']['plan']
+                run['manifest_path']=str(manifest_path)
+                if role=='experimenter' or stage_name=='supplement':
+                    for e in manifest['evidence']:
+                        if e['id'].startswith('V'):
+                            self._artifact(run,'verification',e['title'],e['output'],source='tool')
                 run.setdefault('model_results', []).append(dict(outcome, revision=revision))
                 for tool_event in outcome.get('tool_events', []):
                     self._event(run, role, '模型实际工具调用', str(tool_event.get('command', ''))[:1500] + '\n退出码：' + str(tool_event.get('exit_code')), source='tool')
-                self._artifact(run, 'model_analysis', ('真实规划' if role == 'planner' else '真实静态分析') + ' · ' + hybrid_agent.MODEL,
+                self._artifact(run, 'model_analysis', {'planner':'真实规划','analyst':'真实静态分析','experimenter':'真实实验核验','reviewer':'真实证据评审'}[role] + ' · ' + hybrid_agent.MODEL,
                                json.dumps(outcome['result'], ensure_ascii=False, indent=2), source='model')
                 run['roles'][role] = 'done'
-                run['roles']['analyst' if role == 'planner' else 'experimenter'] = 'pending'
+                if role=='reviewer':
+                    tasks=outcome['result'].get('task_results',[])
+                    gaps=[t for t in tasks if t['status']=='blocked' or t['blocker'].strip()]
+                    ready=bool(tasks) and not gaps and not outcome['result']['unknowns']
+                    final=stage_name=='recheck'
+                    status='ready_for_expert' if ready else 'research_blocked' if final else 'needs_analysis'
+                    run['reviews'].append({'revision':revision,'status':status,'target':'expert' if ready else 'analyst',
+                        'reason':outcome['result']['summary'],'acceptance':'逐项解决计划缺口；真实证据不足不得通过',
+                        'refs':sorted({eid for t in tasks for eid in t['evidence_ids']}),'source':'model','gaps':gaps})
+                    if ready:
+                        run['status']='waiting_expert';run['stage']=len(run.get('stages',STAGES))-1
+                    elif final:run['status']='research_blocked'
+                    else:run['roles']['analyst']='pending'
+                elif role=='planner':run['roles']['analyst']='pending'
+                elif role=='experimenter':run['roles']['reviewer']='pending'
+                elif stage_name=='supplement':run['roles']['reviewer']='pending'
+                else:run['roles']['experimenter']='pending'
                 run['active_job'] = None
                 run['stage'] += 1
                 run['next_at'] = time.time() + 3
@@ -296,6 +284,8 @@ class Engine:
             raise ValueError('未知操作')
         with self.lock, self.db() as c:
             run = self._load(c, rid)
+            if run.get('mode')!='hybrid' and action in ('resume','step','steer'):
+                raise ValueError('历史模拟任务不可继续，请新建真实 Luna 研究')
             if action in ('steer', 'note', 'close'):
                 message = text_field(body, 'text')
                 if action == 'close' and run['status'] != 'waiting_expert':
@@ -337,8 +327,8 @@ class Engine:
                 run['active_job'] = None
                 self._event(run, 'expert', '暂停研究', '保留当前节点，等待恢复。')
             elif action == 'resume':
-                if run['status'] not in ('paused', 'failed'): raise ValueError('只有暂停或失败的研究可以恢复')
-                if run['status'] == 'failed' and 'stages' in run:
+                if run['status'] not in ('paused', 'failed', 'research_blocked'): raise ValueError('只有暂停或失败的研究可以恢复')
+                if run['status'] in ('failed','research_blocked') and 'stages' in run:
                     run['history'].append({k: copy.deepcopy(run[k]) for k in ('revision', 'focus', 'stage', 'status', 'plan', 'knowledge_refs')})
                     run['revision'] += 1
                     row = c.execute('SELECT body FROM tool_settings WHERE name=?', ('static',)).fetchone()

@@ -145,6 +145,13 @@ def investigate(target, manifest, workspace, check, progress, execute):
             current = stream.read(64 * 1024 * 1024 + 1)
         if hashlib.sha256(current).hexdigest() != manifest['metadata']['original_sha256']:
             raise ValueError('目标在静态采集后发生变化，拒绝启动或关联运行时证据')
+        bundle=next((p for p in target.parents if p.suffix=='.xpc'),None)
+        if bundle:
+            try:
+                info=plistlib.loads((bundle/'Contents/Info.plist').read_bytes())
+                result['bundle']={'path':str(bundle),'identifier':info.get('CFBundleIdentifier'),'xpc_service':info.get('XPCService'), 'scope':'bundle 元数据，不是运行时注册或可达性证明'}
+                record('XPC bundle 服务声明',result['bundle'])
+            except (OSError,ValueError,ExpatError) as exc: result['limitations'].append(str(exc))
         definitions, errors = launch_definitions(target)
         result['launch_definitions'] = definitions
         record('匹配目标可执行路径的启动配置', {'matches': definitions, 'read_errors': errors})
@@ -182,7 +189,7 @@ def investigate(target, manifest, workspace, check, progress, execute):
                     record('运行时采样失败', {'pid': pid, 'error': str(exc)})
                     result['limitations'].append(f'PID {pid}: {exc}')
             if not result['processes']:
-                result['limitations'].append('未取得稳定的 ARM 目标进程；已尝试进程匹配及已注册服务正常启动。UID、运行时权限与 sandbox 保持未知。')
+                result['limitations'].append('未取得稳定的 ARM 目标进程；进程匹配未成功。实际启动尝试以 attempts 为准，未匹配 launchd 定义时不代表已尝试启动 XPC bundle。UID、运行时权限与 sandbox 保持未知。')
         except (OSError, AttributeError) as exc: result['limitations'].append(str(exc))
     outputs = {e['id']: e['output'] for e in evidence}
     # Symbol references are leads, not established inbound endpoints.

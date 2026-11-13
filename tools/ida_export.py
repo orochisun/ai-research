@@ -72,7 +72,7 @@ def export(binary, output):
         ida_auto.auto_wait()
         decompiler=ida_hexrays.init_hexrays_plugin()
         nodes,edges,unresolved,registrations={},[],[],[]
-        callbacks={'__CFMessagePortCreateLocalEx':'X4','_CFMessagePortCreateLocal':'X2'}
+        callbacks={'__CFMessagePortCreateLocalEx':'X4','_CFMessagePortCreateLocal':'X2','_xpc_main':'X0'}
         for start in idautils.Functions():
             f=ida_funcs.get_func(start);seg=ida_segment.getseg(start)
             segment=ida_segment.get_segm_name(seg) if seg else ''
@@ -114,8 +114,14 @@ def export(binary, output):
         wanted={r['address'] for r in registrations}
         wanted.update(e['from'] for e in edges if any(k in nodes.get(e['to'],{}).get('name','') for k in ('SecTaskCopyValueForEntitlement','sandbox_check_by_audit_token')))
         wanted.update(r['registration_function'] for r in registrations)
+        # Small services: include every internal function, including block invokes and
+        # path helpers which are not ordinary call edges from the registration root.
+        internal=[a for a,n in nodes.items() if not n['external']]
+        if len(internal)<=48: wanted.update(internal)
+        else:
+            wanted.update(e['from'] for e in edges if any(k in nodes.get(e['to'],{}).get('name','') for k in ('xpc_', 'SecKeychain', 'sandbox_extension', 'getpw', 'getenv')))
         details=[]
-        for address in sorted(wanted)[:24]:
+        for address in sorted(wanted)[:48]:
             ea=int(address,16);f=ida_funcs.get_func(ea);node=nodes[address]
             detail={'address':address,'name':node['display'],'disassembly':'\n'.join(node['disassembly']),
                     'cfg':[{'start':hex(b.start_ea),'end':hex(b.end_ea),'successors':[hex(s.start_ea) for s in b.succs()]} for b in ida_gdl.FlowChart(f)]}
@@ -124,7 +130,7 @@ def export(binary, output):
                 except Exception as exc: detail['decompile_error']=str(exc)
             details.append(detail)
         output.write_text(json.dumps({'engine':'IDA/Hex-Rays','nodes':nodes,'edges':edges,'unresolved_calls':unresolved,
-                                      'sources':registrations,'functions':details,
+                                      'sources':registrations,'functions':details,'detail_coverage':{'selected':len(details),'candidates':len(wanted),'internal_functions':len(internal),'truncated':len(wanted)>48},
                                       'limitations':['Single ARM image only; imported library bodies are boundaries.',
                                                       'ObjC selector stubs do not resolve receiver implementations.',
                                                       'Static call edges do not prove path feasibility or attacker-controlled data flow.']},ensure_ascii=False,indent=2))

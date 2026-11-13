@@ -83,20 +83,34 @@ class HybridTests(unittest.TestCase):
                 self.create()
             model.assert_not_called()
 
-    def test_real_stages_then_mock_review_loop(self):
+    def test_real_roles_and_unresolved_review_cannot_pass(self):
         r = self.create()
-        with patch('hybrid_agent.collect', side_effect=self.collect), patch('hybrid_agent.run_role', side_effect=lambda role,*args: outcome(role)) as call:
-            for stage in (2, 3):
-                self.engine.action(r['id'], {'action': 'step'})
-                r = self.wait_job(r['id'])
-                self.assertEqual(r['stage'], stage)
-            self.assertEqual([c.args[0] for c in call.call_args_list], ['planner', 'analyst'])
-        self.assertEqual(r['plan'], ['inspect evidence'])
-        self.assertEqual({a['source'] for a in r['artifacts']}, {'tool', 'model'})
-        for _ in range(4): r = self.engine.action(r['id'], {'action': 'step'})
-        self.assertEqual(r['status'], 'waiting_expert')
-        self.assertEqual([x['status'] for x in r['reviews']], ['needs_experiment', 'ready_for_expert'])
-        self.assertEqual(r['artifacts'][-1]['source'], 'simulation')
+        def response(role,*args):
+            value=outcome(role)
+            value['result']['task_results']=[{'task_index':1,'status':'blocked','conclusion':'unresolved fixture','evidence_ids':['T0'],'attempt':'inspected fixture','blocker':'missing runtime'}]
+            return value
+        with patch('hybrid_agent.run_role',side_effect=response) as call, patch('verification.collect') as verify:
+            for stage in range(2,8):
+                self.engine.action(r['id'],{'action':'step'});r=self.wait_job(r['id'])
+                self.assertEqual(r['stage'],stage)
+            self.assertEqual([c.args[0] for c in call.call_args_list],['planner','analyst','experimenter','reviewer','analyst','reviewer'])
+            self.assertEqual(verify.call_count,2)
+        self.assertEqual(r['status'],'research_blocked')
+        self.assertEqual([x['status'] for x in r['reviews']],['needs_analysis','research_blocked'])
+        self.assertNotIn('simulation',{a['source'] for a in r['artifacts']})
+        r=self.engine.action(r['id'],{'action':'resume'})
+        self.assertEqual(r['stage'],0);self.assertEqual(r['revision'],2)
+
+    def test_partial_observation_with_blocker_never_passes_review(self):
+        r=self.create()
+        with self.engine.lock,self.engine.db() as c:
+            r=self.engine._load(c,r['id']);r['stage']=6;r['plan']=['inspect evidence'];self.engine._save(c,r)
+        value=outcome('reviewer');value['result']['unknowns']=[]
+        value['result']['task_results']=[{'task_index':1,'status':'observed_runtime','conclusion':'partial observation','evidence_ids':['T0'],'attempt':'actual sample','blocker':'identity remains unknown'}]
+        with patch('hybrid_agent.run_role',return_value=value):
+            self.engine.action(r['id'],{'action':'step'});r=self.wait_job(r['id'])
+        self.assertEqual(r['status'],'research_blocked')
+        self.assertEqual(len(r['reviews'][-1]['gaps']),1)
 
     def test_steering_during_model_does_not_block_or_publish_stale_result(self):
         started, release = threading.Event(), threading.Event()
@@ -154,7 +168,9 @@ class HybridTests(unittest.TestCase):
         self.assertEqual(r['history'][-1]['status'], 'failed')
 
     def test_simulation_knowledge_is_excluded_from_real_planner(self):
-        demo = self.engine.create({'target': '/fake/Demo.xpc'})
+        demo = self.engine.create({'target': str(self.target)})
+        with self.engine.lock, self.engine.db() as c:
+            demo['source']='simulation';self.engine._save(c,demo)
         self.engine.action(demo['id'], {'action': 'note', 'text': 'simulated knowledge'})
         k = self.engine.knowledge()[0]
         self.engine.edit_knowledge(k['id'], {'summary': k['summary'], 'status': 'confirmed', 'scope': 'global', 'version': 1})

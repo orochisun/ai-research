@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import platform
 
-SINKS = {'_compression_decode_buffer':'sink:extract', '_uncompress':'sink:extract',
+SINKS = {'_sandbox_extension_issue_file':'sink:capability', '_SecKeychainGetPath':'sink:path', '_xpc_connection_send_message':'sink:reply', '_compression_decode_buffer':'sink:extract', '_uncompress':'sink:extract',
          '_open':'sink:file', '_openat':'sink:file', '_write':'sink:file', '_writev':'sink:file',
          '_fopen':'sink:file', '_mmap':'sink:memory', '_memcpy':'sink:memory',
          '_CFPropertyListCreateFromXMLData':'sink:parse', '_CFPropertyListCreateWithData':'sink:parse',
@@ -90,7 +90,7 @@ def collect(manifest, folder, check, progress, execute):
     paths=find_paths(graph,manifest['metadata']['target'],folder/'disasm')
     (folder/'findings.json').write_text(json.dumps(paths,ensure_ascii=False,indent=2))
     summary={k:v for k,v in paths.items() if k!='unresolved_calls'}
-    summary.update(status='collected',engine=graph['engine'],architecture=selection['architecture'],sha256=manifest['metadata']['sha256'],
+    summary.update(detail_coverage=graph.get('detail_coverage',{}),status='collected',engine=graph['engine'],architecture=selection['architecture'],sha256=manifest['metadata']['sha256'],
                    function_count=len(graph['nodes']),edge_count=len(graph['edges']),unresolved_call_count=len(graph['unresolved_calls']),
                    export_path=str(export),findings_path=str(folder/'findings.json'),duration_seconds=duration)
     # Compact paths and full auth/registration functions are model-visible, raw graph remains auditable.

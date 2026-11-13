@@ -1,8 +1,8 @@
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const roleNames = {investigator:'环境调查 Agent',planner:'规划 Agent',analyst:'分析 Agent',experimenter:'实验 Agent',reviewer:'评审 Agent',knowledge:'知识 Agent',expert:'人类专家'};
-const states = {running:'研究中',paused:'已暂停',waiting_expert:'等待专家判断',completed:'已收束',failed:'阶段失败 · 可重试'};
-const sources = {simulation:'模拟数据',hybrid:'真实规划分析 · 实验模拟',expert:'专家输入',tool:'真实工具记录',model:'真实模型 · gpt-6-luna',system:'编排记录'};
+const states = {running:'研究中',paused:'已暂停',waiting_expert:'等待专家判断',completed:'已收束',failed:'阶段失败 · 可重试',research_blocked:'证据缺口未解决 · 可重试'};
+const sources = {simulation:'模拟数据',hybrid:'真实研究 · gpt-6-luna',expert:'专家输入',tool:'真实工具记录',model:'真实模型 · gpt-6-luna',system:'编排记录'};
 const roleStates = {pending:'等待交接',running:'正在处理',done:'已交付',returned:'已退回 · 等待补齐',failed:'调用失败'};
 let selected = localStorage.getItem('nexus-demo-selected'), run = null, knowledge = [], busy = false, mutating = false, view = 'research', lastRendered = '', mutationEpoch = 0;
 async function api(path, body) {
@@ -50,8 +50,8 @@ function render(r) {
   $('runId').textContent = 'RESEARCH / ' + r.id;
   $('targetName').textContent = r.target.split('/').pop(); $('targetPath').textContent = r.target;
   $('runStatus').textContent = states[r.status]; $('roundLabel').textContent = `第 ${r.revision} 轮 · 已完成 ${r.stage} / ${(r.stages || Array(6)).length} 个流程节点`;
-  $('pause').textContent = r.active_job ? '暂停当前调查/调用' : ['paused','failed'].includes(r.status) ? '继续执行' : '暂停';
-  $('pause').disabled = !['running','paused','failed'].includes(r.status); $('step').disabled = !!r.active_job || !['running','paused'].includes(r.status);
+  $('pause').textContent = r.active_job ? '暂停当前调查/调用' : ['paused','failed','research_blocked'].includes(r.status) ? '继续执行' : '暂停';
+  $('pause').disabled = !['running','paused','failed','research_blocked'].includes(r.status); $('step').disabled = !!r.active_job || !['running','paused'].includes(r.status);
   $('expertAction').querySelector('[value="close"]').disabled = r.status !== 'waiting_expert';
   $('expertAction').querySelector('[value="note"]').disabled = r.status === 'completed';
   if ($('expertAction').selectedOptions[0].disabled) $('expertAction').value = 'steer';
@@ -72,7 +72,7 @@ function render(r) {
   $('knowledgeRefs').textContent = r.knowledge_refs.length ? '本轮引用：' + r.knowledge_refs.map(k => `${k.id} v${k.version} · ${k.summary}`).join('；') : '本轮暂无已确认知识引用。';
   const reviews = r.reviews.filter(x => x.revision === r.revision);
   $('reviewCount').textContent = `${reviews.length} 次评审`;
-  $('reviews').innerHTML = reviews.map(x => `<div class="review-card ${x.status==='ready_for_expert'?'pass':''}"><strong>${x.status==='ready_for_expert'?'✓ 材料就绪 → 专家判断':'↩ 评审打回 → 实验 Agent'}</strong><p>${esc(x.reason)}</p><small>补齐标准：${esc(x.acceptance)}</small><small>引用：${esc(x.refs.join(' · '))}</small></div>`).join('') || '<p class="empty-note">等待分析与实验提交材料。</p>';
+  $('reviews').innerHTML = reviews.map(x => `<div class="review-card ${x.status==='ready_for_expert'?'pass':''}"><strong>${x.status==='ready_for_expert'?'✓ 材料就绪 → 专家判断':x.status==='research_blocked'?'证据缺口未解决 → 研究阻塞':'↩ 评审打回 → 分析 Agent'}</strong><p>${esc(x.reason)}</p><small>补齐标准：${esc(x.acceptance)}</small><small>引用：${esc(x.refs.join(' · '))}</small></div>`).join('') || '<p class="empty-note">等待分析与实验提交材料。</p>';
   renderArtifacts();
   $('timeline').innerHTML = [...r.events].reverse().map(e => `<div class="event ${e.role==='expert'?'expert':''}"><small>第 ${e.revision} 轮 · ${roleNames[e.role]} · ${new Date(e.time*1000).toLocaleTimeString()} · ${esc(sources[e.source] || e.source)}</small><br><strong>${esc(e.title)}</strong><p>${esc(e.detail)}</p>${e.refs.length?`<small>关联 ${esc(e.refs.join(' · '))}</small>`:''}</div>`).join('');
   $('messages').innerHTML = [...r.messages].reverse().map(m => `<div class="message"><small>${esc(m.id)} · 第 ${m.revision} 轮 · 专家原话</small><p>${esc(m.text)}</p></div>`).join('') || '<p class="empty-note">你的发言会在这里保留。</p>';
@@ -97,8 +97,8 @@ function renderCallGraph(r) {
 }
 function renderModel(r) {
   $('modelPanel').hidden = r.mode !== 'hybrid';
-  $('modelStatus').textContent = r.error || (r.active_job ? (r.roles.investigator==='running' ? '正在自动调查运行环境与 IPC，完成后进入模型规划。' : 'gpt-6-luna 正在后台工作。可暂停或随时调整方向，日志见研究时间线。') : '引用片段已校验；模型解释与研究价值仍需专家判断。实验保持模拟。');
-  $('modelResults').innerHTML = (r.model_results || []).filter(m=>m.revision===r.revision).map(m=>`<details class="artifact" open><summary>${esc(roleNames[m.role])} · ${esc(m.model)} · ${m.duration_seconds}s</summary><p>${esc(m.result.summary)}</p><h3>有引用的观察</h3>${m.result.observations.map(o=>`<div class="message"><p>${esc(o.statement)}</p><small>${esc(o.evidence_id)} · 原文引用</small><pre>${esc(o.quote)}</pre></div>`).join('')}<h3>模型推断与限制</h3>${m.result.inferences.map(i=>`<div class="message"><p>${esc(i.statement)}</p><small>${esc(i.evidence_ids.join(', '))} · ${esc(i.limitation)}</small></div>`).join('')}<h3>尚未确认</h3><ul>${m.result.unknowns.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><h3>后续研究建议</h3><ul>${m.result.expert_questions.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>${m.attempts ? `<p>已自动纠错一次；首次输出未通过引用校验，以下为通过校验的结果。</p>${m.attempts.map(a=>`<small>${a.accepted ? "通过" : "未通过"} · ${esc(a.result_path)}</small>`).join("<br>")}` : ""}<small>原始记录：${esc(m.events_path)}</small></details>`).join('');
+  $('modelStatus').textContent = r.error || (r.active_job ? (r.roles.investigator==='running' ? '正在自动调查运行环境与 IPC，完成后进入模型规划。' : 'gpt-6-luna 正在后台工作。可暂停或随时调整方向，日志见研究时间线。') : '引用片段已校验；模型解释与研究价值仍需专家判断。实验采用实际工具记录。');
+  $('modelResults').innerHTML = (r.model_results || []).filter(m=>m.revision===r.revision).map(m=>`<details class="artifact" open><summary>${esc(roleNames[m.role])} · ${esc(m.model)} · ${m.duration_seconds}s</summary><p>${esc(m.result.summary)}</p><h3>有引用的观察</h3>${m.result.observations.map(o=>`<div class="message"><p>${esc(o.statement)}</p><small>${esc(o.evidence_id)} · 原文引用</small><pre>${esc(o.quote)}</pre></div>`).join('')}<h3>模型推断与限制</h3>${m.result.inferences.map(i=>`<div class="message"><p>${esc(i.statement)}</p><small>${esc(i.evidence_ids.join(', '))} · ${esc(i.limitation)}</small></div>`).join('')}${m.result.task_results?'<h3>逐项计划交付</h3>'+m.result.task_results.map(t=>'<div class="message"><p>'+esc(t.task_index+' · '+t.status+' · '+t.conclusion)+'</p><small>'+esc(t.attempt)+'<br>'+esc(t.blocker)+'</small></div>').join(''):''}<h3>尚未确认</h3><ul>${m.result.unknowns.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><h3>后续研究建议</h3><ul>${m.result.expert_questions.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>${m.attempts ? `<p>已自动纠错一次；首次输出未通过引用校验，以下为通过校验的结果。</p>${m.attempts.map(a=>`<small>${a.accepted ? "通过" : "未通过"} · ${esc(a.result_path)}</small>`).join("<br>")}` : ""}<small>原始记录：${esc(m.events_path)}</small></details>`).join('');
 }
 function renderArtifacts() {
   if (!run) return;
@@ -121,7 +121,6 @@ $('createForm').onsubmit = e => {e.preventDefault(); perform(async()=>{
   run = await api('/api/demo/runs',{target:$('target').value,goal:$('goal').value,mode:$('runMode').value}); selected=run.id; localStorage.setItem('nexus-demo-selected',selected);
   $('createPanel').open=false; $('expertText').value=''; render(run); lastRendered=''; notify('研究已启动。你可以随时暂停、单步推进或插话。');
 });};
-$('sample').onclick=()=>{$('runMode').value='simulation';$('target').value='/System/Library/XPCServices/DemoIdentityService.xpc';$('goal').value='检查代理转发后的调用者身份与权限边界';};
 $('newRun').onclick=()=>{setView('research');$('createPanel').open=true;$('target').focus();};
 $('runs').onclick=e=>{const b=e.target.closest('[data-run]');if(b) choose(b.dataset.run).catch(fail);};
 $('researchTab').onclick=()=>setView('research');
@@ -134,7 +133,7 @@ $('expertForm').onsubmit=e=>{e.preventDefault();if(!selected)return;perform(asyn
   await loadKnowledge();notify('专家意见已记录，知识候选已归档。');
 });};
 for(const id of ['pause','step']) $(id).onclick=()=>perform(async()=>{
-  run=await api(`/api/demo/runs/${selected}/action`,{action:id==='step'?'step':run.active_job?'pause':['paused','failed'].includes(run.status)?'resume':'pause'});render(run);lastRendered='';
+  run=await api(`/api/demo/runs/${selected}/action`,{action:id==='step'?'step':run.active_job?'pause':['paused','failed','research_blocked'].includes(run.status)?'resume':'pause'});render(run);lastRendered='';
 });
 $('knowledgeList').onclick=e=>{const b=e.target.closest('.source-run');if(b)choose(b.dataset.run).catch(fail);};
 $('knowledgeList').onsubmit=e=>{if(!e.target.matches('.knowledge-form'))return;e.preventDefault();const form=e.target;const id=form.closest('[data-knowledge]').dataset.knowledge;const k=knowledge.find(x=>x.id===id);perform(async()=>{
