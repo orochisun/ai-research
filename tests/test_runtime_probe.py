@@ -83,6 +83,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(r['entitlements']['values'],{'com.example.permission':True})
         self.assertTrue(r['sandbox']['sandboxed'])
 
+    def test_empty_xml_and_der_confirm_absence(self):
+        probe=self.make_probe(0);probe.system.csops.return_value=0
+        ent=probe.sample(12,self.target)['entitlements']
+        self.assertEqual(ent['status'],'absent');self.assertEqual(ent['values'],{})
+        self.assertEqual([c.args[1] for c in probe.system.csops.call_args_list],[7,16])
+
+    def test_der_only_or_failed_query_is_not_absence(self):
+        for der_result in (0,-1):
+            probe=self.make_probe(0)
+            def csops(pid,op,buf,size):
+                if op==16:
+                    if der_result==0:C.memmove(buf,bytes.fromhex('fade717200000010'),8)
+                    return der_result
+                return 0
+            probe.system.csops.side_effect=csops
+            self.assertEqual(probe.sample(12,self.target)['entitlements']['status'],'unknown')
+
     def test_pid_reuse_discards_sample(self):
         probe=self.make_probe(1)
         probe.identity.side_effect=[{'pid':12,'start_sec':1},{'pid':12,'start_sec':2}]

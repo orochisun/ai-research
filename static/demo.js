@@ -58,6 +58,7 @@ function render(r) {
   updateHint();
   $('workflow').innerHTML = Object.entries(r.roles).map(([role,status],i) => `<div class="agent ${esc(status)}"><span class="num">0${i+1} / ${esc(role.toUpperCase())}</span><strong>${roleNames[role]}</strong><small>${roleStates[status]}</small></div>`).join('');
   $('executionMode').textContent = sources[r.source] || r.source;
+  renderConclusion(r);
   renderRuntime(r);
   renderCallGraph(r);
   const dagger=r.static_analysis || r.dagger_analysis;
@@ -79,13 +80,22 @@ function render(r) {
   $('history').innerHTML = r.history.map(h => `<details class="artifact"><summary>第 ${h.revision} 轮 · 已归档 · ${esc(h.focus)}</summary><p class="muted">归档时：${esc(states[h.status])}；已执行 ${h.stage} 个节点</p><ol>${h.plan.map(p=>`<li>${esc(p)}</li>`).join('')}</ol></details>`).join('') || '<p class="empty-note">调整方向后，旧计划将在此归档。</p>';
   $('decision').innerHTML = r.decision ? `<div class="decision"><strong>专家阶段判断</strong><p>${esc(r.decision)}</p></div>` : '';
 }
+function renderConclusion(r) {
+  const latest=(r.model_results||[]).filter(m=>m.revision===r.revision).at(-1);
+  const update=r.conclusion_update?.revision===r.revision ? r.conclusion_update : null;
+  $('conclusionSource').textContent=update?'最新工具复核':latest?(roleNames[latest.role]+' · '+latest.model):'调查中';
+  $('conclusionSummary').textContent=update?.summary || latest?.result.summary || '正在收集证据，确认后的结论会显示在这里。';
+  $('conclusionFacts').innerHTML=(update?.facts || []).map(t=>`<p>${esc(t)}</p>`).join('');
+  const gaps=update?.unknowns || latest?.result.unknowns || [];
+  $('conclusionGaps').innerHTML=gaps.map(t=>`<li>${esc(t)}</li>`).join('') || '<li>当前暂无已列出的缺口。</li>';
+}
 function renderRuntime(r) {
   $('runtimePanel').hidden = !r.stages;
   const v = r.runtime_investigation;
   $('runtimeStatus').textContent = v ? '基础事实自动查证；只在证据支持的采样范围内下结论。' : '先定位真实启动链与进程，再采集 UID、entitlements、sandbox 和 IPC。';
   $('runtimeResults').innerHTML = !v ? '' : v.processes.map(p=>{
     const sample = p.followup || p, i = sample.identity, e = sample.entitlements, b = sample.sandbox;
-    return `<div class="message"><strong>PID ${i.pid} · UID ${i.uid} / EUID ${i.euid} · PPID ${i.ppid}</strong><p>${esc(new Date(sample.observed_at*1000).toLocaleString())} · ${esc(p.evidence_id)}</p><p>Sandbox：${b.status==='confirmed' ? (b.sandboxed?'已启用':'采样时未启用') : '查询失败，未知'}</p><small>${esc(b.scope)}</small><p>运行时 Entitlements：${esc(e.status)}</p><pre>${esc(JSON.stringify(e.values || e,null,2))}</pre></div>`;
+    return `<div class="message"><strong>PID ${i.pid} · UID ${i.uid} / EUID ${i.euid} · PPID ${i.ppid}</strong><p>${esc(new Date(sample.observed_at*1000).toLocaleString())} · ${esc(p.evidence_id)}</p><p>Sandbox：${b.status==='confirmed' ? (b.sandboxed?'已启用':'采样时未启用') : '查询失败，未知'}</p><small>${esc(b.scope)}</small><p>运行时 Entitlements：${esc(e.status==='absent'?'无 entitlement':e.status)}</p><pre>${esc(JSON.stringify(e.values || e,null,2))}</pre></div>`;
   }).join('') + `<h3>IPC 注册及入口线索</h3><pre>${esc(JSON.stringify(v.ipc,null,2))}</pre><details><summary>采集范围与技术限制</summary><ul>${v.limitations.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`;
 }
 function renderCallGraph(r) {
@@ -98,7 +108,7 @@ function renderCallGraph(r) {
 function renderModel(r) {
   $('modelPanel').hidden = r.mode !== 'hybrid';
   $('modelStatus').textContent = r.error || (r.active_job ? (r.roles.investigator==='running' ? '正在自动调查运行环境与 IPC，完成后进入模型规划。' : 'gpt-6-luna 正在后台工作。可暂停或随时调整方向，日志见研究时间线。') : '引用片段已校验；模型解释与研究价值仍需专家判断。实验采用实际工具记录。');
-  $('modelResults').innerHTML = (r.model_results || []).filter(m=>m.revision===r.revision).map(m=>`<details class="artifact" open><summary>${esc(roleNames[m.role])} · ${esc(m.model)} · ${m.duration_seconds}s</summary><p>${esc(m.result.summary)}</p><h3>有引用的观察</h3>${m.result.observations.map(o=>`<div class="message"><p>${esc(o.statement)}</p><small>${esc(o.evidence_id)} · 原文引用</small><pre>${esc(o.quote)}</pre></div>`).join('')}<h3>模型推断与限制</h3>${m.result.inferences.map(i=>`<div class="message"><p>${esc(i.statement)}</p><small>${esc(i.evidence_ids.join(', '))} · ${esc(i.limitation)}</small></div>`).join('')}${m.result.task_results?'<h3>逐项计划交付</h3>'+m.result.task_results.map(t=>'<div class="message"><p>'+esc(t.task_index+' · '+t.status+' · '+t.conclusion)+'</p><small>'+esc(t.attempt)+'<br>'+esc(t.blocker)+'</small></div>').join(''):''}<h3>尚未确认</h3><ul>${m.result.unknowns.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><h3>后续研究建议</h3><ul>${m.result.expert_questions.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>${m.attempts ? `<p>已自动纠错一次；首次输出未通过引用校验，以下为通过校验的结果。</p>${m.attempts.map(a=>`<small>${a.accepted ? "通过" : "未通过"} · ${esc(a.result_path)}</small>`).join("<br>")}` : ""}<small>原始记录：${esc(m.events_path)}</small></details>`).join('');
+  $('modelResults').innerHTML = (r.model_results || []).filter(m=>m.revision===r.revision).map(m=>`<details class="artifact"><summary>${esc(roleNames[m.role])} · ${esc(m.model)} · ${m.duration_seconds}s</summary><p>${esc(m.result.summary)}</p><h3>有引用的观察</h3>${m.result.observations.map(o=>`<div class="message"><p>${esc(o.statement)}</p><small>${esc(o.evidence_id)} · 原文引用</small><pre>${esc(o.quote)}</pre></div>`).join('')}<h3>模型推断与限制</h3>${m.result.inferences.map(i=>`<div class="message"><p>${esc(i.statement)}</p><small>${esc(i.evidence_ids.join(', '))} · ${esc(i.limitation)}</small></div>`).join('')}${m.result.task_results?'<h3>逐项计划交付</h3>'+m.result.task_results.map(t=>'<div class="message"><p>'+esc(t.task_index+' · '+t.status+' · '+t.conclusion)+'</p><small>'+esc(t.attempt)+'<br>'+esc(t.blocker)+'</small></div>').join(''):''}<h3>尚未确认</h3><ul>${m.result.unknowns.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><h3>后续研究建议</h3><ul>${m.result.expert_questions.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>${m.attempts ? `<p>已自动纠错一次；首次输出未通过引用校验，以下为通过校验的结果。</p>${m.attempts.map(a=>`<small>${a.accepted ? "通过" : "未通过"} · ${esc(a.result_path)}</small>`).join("<br>")}` : ""}<small>原始记录：${esc(m.events_path)}</small></details>`).join('');
 }
 function renderArtifacts() {
   if (!run) return;

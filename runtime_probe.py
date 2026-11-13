@@ -69,7 +69,16 @@ class MacProbe:
                 try:
                     ent.update(status='confirmed', values=plistlib.loads(blob.raw[8:size].rstrip(b'\0')))
                 except (ValueError, plistlib.InvalidFileException, ExpatError) as exc: ent['error'] = str(exc)
-            else: ent['error'] = 'No valid XML entitlement blob; not proof of no entitlements'
+            elif magic == 0 and size == 0:
+                # Empty successful XML queries can coexist with DER-only signatures.
+                der = C.create_string_buffer(len(blob)); C.set_errno(0)
+                der_rc = self.system.csops(pid, 16, der, len(der))
+                ent['der_check'] = {'return_code':der_rc,'errno':C.get_errno(),'header_hex':der.raw[:8].hex()}
+                ent['xml_header_hex'] = blob.raw[:8].hex()
+                if der_rc == 0 and der.raw[:8] == bytes(8):
+                    ent.update(status='absent',values={},conclusion='无 entitlement（XML 与 DER 查询均成功且为空）')
+                else: ent['error'] = 'XML 为空，但 DER 存在或查询失败；不能判定无 entitlement'
+            else: ent['error'] = 'Malformed entitlement blob header'
         C.set_errno(0)
         sb = self.sandbox.sandbox_check(pid, None, 0)
         se = C.get_errno()

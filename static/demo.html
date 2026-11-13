@@ -12,7 +12,7 @@
   <header><div><div class="eyebrow">HUMAN-LED · MULTI-AGENT RESEARCH</div><h1 id="pageTitle">研究工作台</h1><p>让 Agent 整理事实，让专家决定方向。</p></div><span class="badge">本地空间 · SQLite 持久化</span></header>
   <p id="error" role="alert" hidden></p><p id="notice" role="status" hidden></p>
   <section id="researchView">
-    <details id="createPanel" class="panel" open><summary>＋ 发起目标研究</summary><form id="createForm"><div class="form-grid"><label>目标路径<input id="target" required maxlength="4096" placeholder="/System/Library/XPCServices/Example.xpc"></label><label>研究方向<input id="goal" maxlength="2000" placeholder="重点研究代理转发后的调用者身份"></label></div><label>运行模式<select id="runMode"><option value="hybrid">真实研究 · gpt-6-luna</option></select></label><div class="row"><p class="muted">真实模式自动调查运行身份、权限、sandbox 和 IPC；必要时正常激活已注册的目标服务，再将证据交给 Codex 模型。实验使用真实探测记录；缺少探测器或证据时明确记录阻塞。</p><button type="submit">启动协作研究 ↗</button></div></form></details>
+    <details id="createPanel" class="panel"><summary>＋ 发起目标研究</summary><form id="createForm"><div class="form-grid"><label>目标路径<input id="target" required maxlength="4096" placeholder="/System/Library/XPCServices/Example.xpc"></label><label>研究方向<input id="goal" maxlength="2000" placeholder="重点研究代理转发后的调用者身份"></label></div><label>运行模式<select id="runMode"><option value="hybrid">真实研究 · gpt-6-luna</option></select></label><div class="row"><p class="muted">真实模式自动调查运行身份、权限、sandbox 和 IPC；必要时正常激活已注册的目标服务，再将证据交给 Codex 模型。实验使用真实探测记录；缺少探测器或证据时明确记录阻塞。</p><button type="submit">启动协作研究 ↗</button></div></form></details>
     <details class="panel" id="staticToolPanel"><summary>⚙ 静态分析工具配置</summary>
       <form id="staticToolForm">
         <label class="inline"><input type="checkbox" id="toolEnabled">启用自动调用</label>
@@ -27,6 +27,7 @@
     <section id="welcome" class="welcome"><div class="welcome-icon">◈</div><h2>从一个 XPC 服务或二进制开始</h2><p>运行环境调查 → 规划 → 分析 → 实验 → 评审打回 → 补充验证 → 专家判断</p><p class="muted">真实模型每阶段最多 5 分钟；工具执行保留完整记录。随时插话，观察计划如何改变。</p></section>
     <div id="runDetail" hidden>
       <div class="run-heading"><div><div class="eyebrow" id="runId"></div><h2 id="targetName"></h2><p id="targetPath" class="path"></p></div><span id="runStatus" class="badge"></span></div>
+      <section class="panel" id="conclusionPanel" aria-label="研究结论"><div class="section-title"><h3>研究结论</h3><span id="conclusionSource" class="badge"></span></div><p id="conclusionSummary"></p><div id="conclusionFacts"></div><details><summary>尚未解决的范围</summary><ul id="conclusionGaps"></ul></details></section>
       <div class="toolbar"><div id="roundLabel"></div><div class="row"><button class="secondary" id="pause">暂停</button><button class="secondary" id="step">推进一步</button><button class="secondary" id="exportRun">导出研究记录 ↓</button></div></div>
       <div class="workflow" id="workflow" aria-label="Agent 流程"></div>
       <div class="work-grid">
