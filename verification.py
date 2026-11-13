@@ -8,6 +8,16 @@ import sandbox_profiles
 
 KEYCHAIN='/System/Library/Frameworks/Security.framework/Versions/A/XPCServices/XPCKeychainSandboxCheck.xpc/Contents/MacOS/XPCKeychainSandboxCheck'
 
+def end_to_end_verified(a):
+    return (a.get('exit_code')==0 and a.get('sandbox_check_null')==1
+            and a.get('status')=='reply_and_comparison'
+            and isinstance(a.get('reply'),dict) and isinstance(a['reply'].get('extensions'),list)
+            and bool(a.get('consume')) and len(a['consume'])==len(a['reply']['extensions'])
+            and all(isinstance(t.get('handle'),int) and t['handle']>=0 for t in a['consume'])
+            and bool(a.get('pre_request')) and bool(a.get('before')) and bool(a.get('after'))
+            and {r['path'] for r in a['pre_request']}=={r['path'] for r in a['before']}=={r['path'] for r in a['after']})
+
+
 def collect(manifest, folder, check, progress, execute):
     folder.mkdir(parents=True,exist_ok=True)
     sandbox_profiles.collect(manifest,folder/'profiles',check)
@@ -38,21 +48,33 @@ def collect(manifest, folder, check, progress, execute):
                 result['status']='observed' if reply.get('status')=='reply' else 'blocked'
             except ValueError:result['blockers'].append('探测未返回有效 JSON，查看原始输出')
             if result.get('reply',{}).get('status')=='reply':
-                # A separate, minimally entitled App Sandbox client checks the received capabilities.
+                # The signed Sandbox client receives path names only, requests its own tokens, then compares access.
                 info=folder/'access-info.plist';entitlements=folder/'access.entitlements'
                 info.write_bytes(plistlib.dumps({'CFBundleIdentifier':'local.ssj.boundary-check','CFBundleName':'SSJ Boundary Check','CFBundleVersion':'1'}))
                 entitlements.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox':True}))
                 access=folder/'access-probe'
+                payload=result['reply'].get('reply',{})
+                paths=sorted({path for group in payload.get('all-paths',{}).values() if isinstance(group,list) for path in group if isinstance(path,str)})
+                if isinstance(payload.get('keychain-home'),str):paths.append(str(Path(payload['keychain-home'])/'Library/Preferences/com.apple.security.plist'))
+                baseline=folder/'baseline-paths.json';baseline.write_text(json.dumps({'paths':paths},ensure_ascii=False))
                 compiled=command(['/usr/bin/clang','-arch','arm64','-fobjc-arc','-framework','Foundation',
-                    '-Wl,-sectcreate,__TEXT,__info_plist,'+str(info),str(Path(__file__).parent/'tools/keychain_access_probe.m'),'-o',str(access)],'access-build',30)
+                    '-Wl,-sectcreate,__TEXT,__info_plist,'+str(info),str(Path(__file__).parent/'tools/keychain_e2e_probe.m'),'-o',str(access)],'access-build',30)
                 if compiled['exit_code']==0:
                     signed=command(['/usr/bin/codesign','--force','--sign','-','--identifier','local.ssj.boundary-check','--entitlements',str(entitlements),str(access)],'access-sign',15)
                     if signed['exit_code']==0:
-                        measurement=command([str(access)],'access-result',15,folder/'request.stdout')
+                        measurement=command([str(access)],'access-result',15,baseline)
                         try:
                             result['access_comparison']=json.loads(measurement['stdout'])
                             result['access_comparison']['exit_code']=measurement['exit_code']
                             result['access_comparison']['entitlements']={'com.apple.security.app-sandbox':True}
+                            a=result['access_comparison']
+                            a['end_to_end']=end_to_end_verified(a)
+                            if a['end_to_end']:
+                                result['control_reply']=result['reply']
+                                result['request']['scope']='同一 App Sandbox 客户端直接请求并消费令牌；stdin 仅传入基线路径，无令牌'
+                                result['reply']={'status':'reply','caller_pid':a['pid'],'caller_uid':a['uid'],'service_pid':a['service_pid'],
+                                    'request':a['request']['message'],'reply':a['reply'],'extensions_consumed':True}
+                            else:result['blockers'].append('端到端客户端未完成请求/消费/对照，查看 access_comparison 原始状态')
                         except ValueError:result['blockers'].append('Sandbox 客户端没有有效 JSON；查看 access-result 的退出码和 stderr')
                     else:result['blockers'].append('Sandbox 客户端签名失败，查看 access-sign')
                 else:result['blockers'].append('Sandbox 客户端编译失败，查看 access-build')

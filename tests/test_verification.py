@@ -20,3 +20,13 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual(len(hybrid_agent.validate_tasks({'task_results':[task,second]},plan,evidence)),2)
         with self.assertRaises(ValueError):hybrid_agent.validate_tasks({'task_results':[task,{**second,'evidence_ids':['missing']}]},plan,evidence)
         with self.assertRaises(ValueError):hybrid_agent.validate_tasks({'task_results':[task,{**second,'blocker':''}]},plan,evidence)
+
+    def test_end_to_end_requires_sandbox_own_reply_full_consumption_and_baseline(self):
+        rows=[{'path':'/example'}]
+        a={'exit_code':0,'sandbox_check_null':1,'status':'reply_and_comparison',
+           'reply':{'extensions':['token']},'consume':[{'handle':2}],
+           'pre_request':rows,'before':rows,'after':rows}
+        self.assertTrue(verification.end_to_end_verified(a))
+        for change in ({'sandbox_check_null':0},{'status':'connection_error'},{'consume':[{'handle':-1}]},
+                       {'consume':[]},{'pre_request':[]},{'after':[{'path':'/different'}]},{'exit_code':3}):
+            with self.subTest(change=change):self.assertFalse(verification.end_to_end_verified(dict(a,**change)))

@@ -4,15 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 extern int sandbox_check(pid_t,const char *,int,...);
-static NSArray *Checks(NSArray *paths) {
-    NSMutableArray *rows=[NSMutableArray array];
-    for(NSString *p in paths){
-        errno=0;int r=sandbox_check(getpid(),"file-read-data",1,p.UTF8String);int re=errno;
-        errno=0;int w=sandbox_check(getpid(),"file-write-data",1,p.UTF8String);int we=errno;
-        errno=0;int fd=open(p.UTF8String,O_RDONLY);int oe=fd<0?errno:0;if(fd>=0)close(fd);
-        [rows addObject:@{@"open_readonly_success":@(fd>=0),@"open_errno":@(oe),@"path":p,@"file_read_data":@(r),@"read_errno":@(re),@"file_write_data":@(w),@"write_errno":@(we)}];
-    }return rows;
-}
+#include "keychain_probe_common.h"
 int main(void){@autoreleasepool{
     NSData *input=[[NSFileHandle fileHandleWithStandardInput] readDataToEndOfFile];
     NSError *error=nil;NSDictionary *record=[NSJSONSerialization JSONObjectWithData:input options:0 error:&error];

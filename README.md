@@ -148,4 +148,4 @@ XPCKeychainSandboxCheck 的实验探测器仅对系统固定路径发出一次 `
 
 XPCKeychainSandboxCheck 探测会保存完整请求与回复，包括原始 sandbox extension 字符串，不再替换为脱敏占位符。实验阶段同时读取本机 `/System/Library/Sandbox/Profiles/application.sb` 及其 literal imports，保留路径、哈希与全文供逐行引用。研究结论顶部直接展示实际调用与完整返回。令牌内容、profile 静态规则和真实客户端消费前后结果需分别判断，不能将存在令牌直接解释为新增权限。
 
-该目标的默认实验还会构建 ARM App Sandbox 客户端（仅 `com.apple.security.app-sandbox=true`，ad-hoc 签名并嵌入 bundle identifier），通过标准输入接收普通会话探测的实际回复，记录令牌消费返回值及消费前后的 `sandbox_check(file-read-data/file-write-data)`、`open(O_RDONLY)` 结果。只打开并关闭，不读取或写入 Keychain 内容；`ENOENT` 与权限拒绝分开报告。此实验不证明 sandbox 客户端可以自行连接服务取得令牌，也不证明 Keychain 条目可解密。
+该目标的默认实验会构建 ARM App Sandbox 客户端（仅 `com.apple.security.app-sandbox=true`，ad-hoc 签名并嵌入 bundle identifier）。标准输入只传基线路径，不传令牌；同一个进程记录请求前基线，直接通过 `xpc_connection_create` 请求 `GrantKeychainPaths`，保存完整回复，再记录消费前、消费后和释放后的 `sandbox_check(file-read-data/file-write-data)` 与 `open(O_RDONLY)` 结果。只打开并关闭，不读取或写入 Keychain 内容；`ENOENT` 与权限拒绝分开报告。仅在 Sandbox 已启用、直接取得回复、全部令牌消费成功且请求前基线覆盖复测路径时标记 `end_to_end=true`。普通会话请求保留作对照及路径发现，不能代替 Sandbox 客户端自己的请求结果。

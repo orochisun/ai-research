@@ -251,7 +251,7 @@ observations 每条只陈述一个引用片段直接支持的事实，禁止一�
 inferences 是与观察分离的解释或假设，引用证据并写清 limitation。不能从符号出现推断一定可达，也不能把字符串提示当成已执行行为。
 unknowns 写未能确认的问题，expert_questions 把研究价值、优先级和风险判断留给人类专家。
 真实模式实验阶段使用 V 编号的实际探测记录，失败也是实测结果，不得编造成功。没有 V 记录或本次实际命令输出时不得声称已执行实验。运行时调查属于真实环境采样，可以陈述采样确认的事实，但不能声称做了漏洞动态验证或确认漏洞。
-路径规则核查必须区分 /Library 和 _HOME/Library，检查针对具体路径的额外 allow、deny 和宏展开；不能把系统 Preferences 拒绝套到用户 Preferences，也不能忽略明确的 file-write* 规则而声称令牌新增写权限。V 的 access_comparison 如存在，包含独立 App Sandbox 客户端消费实际令牌前后的 sandbox_check 和 open(O_RDONLY) 结果：open_errno=2 是 ENOENT，不能解释成 EACCES/EPERM。该客户端只消费来自普通会话探测的令牌，不证明它能自行向服务取得令牌；没有读取文件内容，不代表解密 Keychain。
+路径规则核查必须区分 /Library 和 _HOME/Library，检查针对具体路径的额外 allow、deny 和宏展开；不能把系统 Preferences 拒绝套到用户 Preferences，也不能忽略明确的 file-write* 规则而声称令牌新增写权限。V 的 access_comparison 如存在，包含独立 App Sandbox 客户端消费实际令牌前后的 sandbox_check 和 open(O_RDONLY) 结果：open_errno=2 是 ENOENT，不能解释成 EACCES/EPERM。须检查 end_to_end 字段：为 true 时是同一 Sandbox 客户端在 pre_request 基线之后直接请求服务、取得并消费自己的令牌；为 false 或缺失时不能声称端到端。没有读取文件内容，不代表解密 Keychain。
 P 编号是本机 application.sb 及其 imports 实际内容，必须检查 home-subpath 的 _HOME 展开、allow/deny、UUID 子目录例外和 extension-class。把实际返回路径与已有规则逐项比较，区分已有读取权限、写权限、令牌授予范围及已消费实测。没有动态对照不能声称动态验证，但不能因此拒绝给出有证据的静态规则结论。V 新记录的 reply.reply 为完整实际返回，包括 extensions；旧记录脱敏不代表新记录也脱敏。结论先给具体调用、请求字段、返回路径和令牌类别/路径及对应规则，不能用“字典/数组”代替内容；完整令牌保留在原始回复中。评审必须检查返工新增的证据和方法是否消除了原缺口，不能把重复同一探测当成完成返工。
 返回符合 schema 的 JSON，observations 4 到 12 条，plan 3 到 6 项，内容简洁具体。先读取 evidence.json 与 evidence-lines.json，按需要继续使用工具补证，不限制为 8 次调用。
 研究上下文：
