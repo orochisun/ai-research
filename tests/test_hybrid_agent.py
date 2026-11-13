@@ -235,7 +235,7 @@ class HybridTests(unittest.TestCase):
             self.assertEqual(argv[argv.index('-s')+1],'danger-full-access')
             prompt=(cwd/'prompt.txt').read_text()
             self.assertNotIn('不要执行目标或实验',prompt)
-            prefix=re.search(r'L[0-9a-f]{8}_',prompt).group()
+            prefix='L'+hashlib.sha256(str(cwd).encode()).hexdigest()[:8]+'_'
             answer=result();answer['observations']=[dict(statement='actual live output',evidence_id=prefix+'1',quote='@lines:1-1')]
             (cwd/'result.json').write_text(json.dumps(answer))
             stdout.write_text(json.dumps(dict(type='item.completed',item=dict(type='command_execution',command='cat profile',exit_code=0,aggregated_output='actual profile rule'))))
@@ -244,6 +244,17 @@ class HybridTests(unittest.TestCase):
             answer=hybrid_agent.run_role('planner',{},m,self.root/'live',lambda:None,lambda *a:None)
         self.assertEqual(answer['result']['observations'][0]['quote'],'actual profile rule')
         self.assertEqual(m['evidence'][-1]['output'],'actual profile rule')
+
+    def test_timeout_preserves_completed_live_evidence(self):
+        m=manifest()
+        def fail(argv,cwd,stdout,stderr,*args):
+            stdout.write_text(json.dumps(dict(type='item.completed',item=dict(id='completed',type='command_execution',command='probe',exit_code=0,aggregated_output='measured before timeout')))+'\n')
+            raise TimeoutError('provider timeout')
+        with patch('hybrid_agent.shutil.which',return_value='codex'),patch('hybrid_agent.execute',side_effect=fail):
+            with self.assertRaises(TimeoutError):
+                hybrid_agent.run_role('planner',{},m,self.root/'timeout',lambda:None,lambda *a:None)
+        self.assertEqual(m['evidence'][-1]['output'],'measured before timeout')
+        self.assertTrue(Path(m['evidence'][-1]['record_path']).exists())
 
     def test_correction_is_bounded_and_never_accepts_invalid_quote(self):
         def fake_execute(argv, cwd, stdout, stderr, *args):

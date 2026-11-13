@@ -47,3 +47,21 @@ def select_arm(raw):
     if (actual_cpu, actual_subtype) != (cpu, subtype): raise ValueError('切片头与架构表不一致')
     return image, {'architecture': arch, 'universal': True, 'offset': start, 'slice_size': size,
                    'container_architecture_count': count, 'non_arm_slices_analyzed': False}
+
+
+def all_arm_architectures(raw):
+    """Allow a runtime fallback only if every possible slice is verified ARM."""
+    select_arm(raw)  # Validate all container bounds first.
+    if raw[:4] in THIN:
+        return [thin_info(raw)]
+    endian, wide = FAT[raw[:4]]
+    count = struct.unpack_from(endian + 'I', raw, 4)[0]
+    result=[]
+    for index in range(count):
+        entry=8+index*(32 if wide else 20)
+        start,size=struct.unpack_from(endian+('QQ' if wide else 'II'),raw,entry+8)
+        cpu,subtype=struct.unpack_from(endian+'II',raw,entry)
+        actual=thin_info(raw[start:start+size])
+        if actual[:2]!=(cpu,subtype & 0xFFFFFF): raise ValueError('切片头与架构表不一致')
+        result.append(actual)
+    return result

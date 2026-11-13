@@ -13,9 +13,11 @@ from pathlib import Path
 import plistlib
 import re
 import struct
+import subprocess
 import sys
 import time
 from xml.parsers.expat import ExpatError
+from binary_policy import all_arm_architectures
 
 
 class BSDInfo(C.Structure):
@@ -52,13 +54,47 @@ class MacProbe:
             raise OSError(C.get_errno(), 'proc_pidinfo failed')
         return {k: getattr(info, k) for k in ('pid', 'ppid', 'uid', 'euid', 'gid', 'egid', 'svuid', 'start_sec', 'start_usec')}
 
+    def stable_identity(self, pid):
+        try:
+            return self.identity(pid)
+        except OSError as exc:
+            # ps exposes effective UID as uid, real UID as ruid on macOS.
+            argv=['/bin/ps','-p',str(pid),'-o','pid=,ppid=,ruid=,uid=,rgid=,gid=,lstart=']
+            try:
+                proc=subprocess.run(argv,capture_output=True,text=True,timeout=5,
+                                    env=dict(os.environ,LC_ALL='C',TZ='UTC'))
+            except subprocess.TimeoutExpired as timeout:
+                raise OSError('ps identity fallback timed out after 5 seconds') from timeout
+            fields=proc.stdout.strip().split(maxsplit=6)
+            if proc.returncode or len(fields)!=7 or int(fields[0])!=pid:
+                raise OSError(f'identity fallback failed: {proc.stderr.strip()}; {exc}') from exc
+            values=dict(zip(('pid','ppid','uid','euid','gid','egid'),map(int,fields[:6])))
+            return dict(values,start_time=fields[6],method='ps ruid/uid + lstart',
+                        primary_error=str(exc),
+                        lifecycle_scope='PID、路径及秒级启动时间前后核对；不具备微秒级 PID 复用检测精度')
+
     def sample(self, pid, target):
-        start = self.identity(pid)
+        start = self.stable_identity(pid)
         if self.path(pid) != str(target): raise ValueError('PID executable mismatch')
         arch = (C.c_int32 * 2)()
+        C.set_errno(0)
         arch_rc = self.proc.proc_pidinfo(pid, 19, 0, arch, C.sizeof(arch))
-        if arch_rc != C.sizeof(arch) or arch[0] not in (12, 0x0100000c):
-            raise ValueError('运行进程不是可确认的 ARM 架构，拒绝进一步分析')
+        arch_errno=C.get_errno()
+        architecture={'cpu_type':arch[0],'cpu_subtype':arch[1],'method':'proc_pidinfo(PROC_PIDARCHINFO)'}
+        fallback_hash=None
+        if arch_rc == C.sizeof(arch):
+            if arch[0] not in (12, 0x0100000c):
+                raise ValueError('运行进程不是 ARM 架构，拒绝进一步分析')
+        else:
+            with Path(target).open('rb') as stream: raw=stream.read(64*1024*1024+1)
+            if len(raw)>64*1024*1024:raise ValueError('ARM 架构降级核验超过文件大小限制')
+            try: candidates=all_arm_architectures(raw)
+            except ValueError as exc:raise ValueError('无法排除非 ARM 运行切片，拒绝进一步分析') from exc
+            fallback_hash=hashlib.sha256(raw).hexdigest()
+            architecture={'cpu_type':None,'cpu_subtype':None,'method':'all executable slices verified ARM',
+                          'candidates':[x[2] for x in candidates],'sha256':fallback_hash,
+                          'query_return_code':arch_rc,'query_errno':arch_errno,
+                          'scope':'只确认路径对应文件的所有切片为 ARM；运行时具体 subtype 未取得'}
         blob = C.create_string_buffer(1024 * 1024)
         C.set_errno(0)
         rc = self.system.csops(pid, 7, blob, len(blob))
@@ -86,10 +122,12 @@ class MacProbe:
                    'sandboxed': bool(sb) if sb in (0, 1) and se == 0 else None,
                    'method': 'sandbox_check(pid, NULL, 0)', 'return_code': sb, 'errno': se,
                    'scope': '采样时是否存在 sandbox；不代表已枚举有效策略或 sandbox extensions'}
-        end = self.identity(pid)
+        end = self.stable_identity(pid)
         if start != end or self.path(pid) != str(target): raise ValueError('进程身份在采样中变化，丢弃结果')
+        if fallback_hash and hashlib.sha256(Path(target).read_bytes()).hexdigest()!=fallback_hash:
+            raise ValueError('采样期间可执行文件发生变化，丢弃结果')
         return {'observed_at': time.time(), 'identity': start, 'executable': str(target),
-                'architecture': {'cpu_type': arch[0], 'cpu_subtype': arch[1]},
+                'architecture': architecture,
                 'entitlements': ent, 'sandbox': sandbox}
 
 

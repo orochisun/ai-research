@@ -119,3 +119,31 @@ class RuntimeTests(unittest.TestCase):
             r=rp.investigate(self.target,self.manifest(),self.root/'runtime',lambda:None,lambda *a:None,Mock())
         self.assertEqual(r['status'],'incomplete');probe.assert_not_called()
         self.assertIn('iOS',' '.join(r['limitations']))
+
+    def test_root_identity_failure_falls_back_without_skipping_independent_apis(self):
+        from test_binary_policy import thin
+        self.target.write_bytes(thin())
+        probe=self.make_probe(0)
+        probe.identity.side_effect=OSError(1,'denied')
+        probe.proc.proc_pidinfo.side_effect=None;probe.proc.proc_pidinfo.return_value=0
+        probe.system.csops.return_value=0
+        ps=Mock(returncode=0,stdout='12 1 0 0 0 0 Wed Nov  4 06:54:39 2026\n',stderr='')
+        with patch('runtime_probe.subprocess.run',return_value=ps): sample=probe.sample(12,self.target)
+        self.assertEqual((sample['identity']['uid'],sample['identity']['euid']),(0,0))
+        self.assertFalse(sample['sandbox']['sandboxed'])
+        self.assertEqual(sample['entitlements']['status'],'absent')
+        self.assertIsNone(sample['architecture']['cpu_subtype'])
+        probe.sandbox.sandbox_check.assert_called_once()
+
+    def test_arch_fallback_rejects_mixed_universal_before_queries(self):
+        from test_binary_policy import thin,fat
+        self.target.write_bytes(fat([(0x0100000c,2,thin()),(0x01000007,3,thin(0x01000007,3))]))
+        probe=self.make_probe();probe.proc.proc_pidinfo.side_effect=None;probe.proc.proc_pidinfo.return_value=0
+        with self.assertRaisesRegex(ValueError,'非 ARM'):probe.sample(12,self.target)
+        probe.system.csops.assert_not_called()
+
+    def test_ps_start_time_change_rejects_pid_reuse(self):
+        probe=self.make_probe();probe.identity.side_effect=OSError(1,'denied')
+        samples=[Mock(returncode=0,stdout=f'12 1 0 0 0 0 {stamp}',stderr='') for stamp in ['Wed Nov 4 06:54:39 2026','Wed Nov 4 06:54:40 2026']]
+        with patch('runtime_probe.subprocess.run',side_effect=samples),self.assertRaisesRegex(ValueError,'身份'):
+            probe.sample(12,self.target)
